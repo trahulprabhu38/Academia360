@@ -7,7 +7,7 @@ services:
     container_name: mongodb
     hostname: mongodb
     ports:
-      - "27018:27017"
+      - "27017:27017"
     volumes:
       - ./data/mongodb-data:/data/db
     environment:
@@ -31,7 +31,7 @@ services:
       POSTGRES_USER: admin
       POSTGRES_PASSWORD: password
     ports:
-      - "5432:5432"
+      - "5433:5432"
     volumes:
       - ./data/pg-data:/var/lib/postgresql/data
       - ./backend/migrations/001_initial_schema.sql:/docker-entrypoint-initdb.d/001_initial_schema.sql:ro
@@ -50,7 +50,7 @@ services:
     container_name: chromadb
     hostname: chromadb
     ports:
-      - "8000:8000"  # Internal port 8000, mapped to external 8000
+      - "8001:8000"  # Internal port 8000, mapped to external 8000
     environment:
       - CHROMA_SERVER_AUTH=False
       - IS_PERSISTENT=True
@@ -93,7 +93,7 @@ services:
       mongodb:
         condition: service_healthy
     ports:
-      - "8080:8080"
+      - "8081:8080"
     volumes:
       - ./backend/uploads:/app/uploads
     networks:
