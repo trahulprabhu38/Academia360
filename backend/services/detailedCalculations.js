@@ -44,6 +44,8 @@ class DetailedCalculationsService {
     if (nameUpper === 'AAT' || nameUpper === 'QUIZ') return true;
 
     const qNum = this.extractQuestionNumber(name);
+    // If no Q-number (e.g. lab columns like Lab_CIE_30), treat as compulsory
+    if (qNum === null) return true;
     return qNum === 1 || qNum === 2;
   }
 
@@ -57,94 +59,127 @@ class DetailedCalculationsService {
     if (!name) return null;
 
     const nameUpper = name.toUpperCase();
-    // AAT and QUIZ have no optional pairs
     if (nameUpper === 'AAT' || nameUpper === 'QUIZ') return null;
 
     const qNum = this.extractQuestionNumber(name);
     if (!qNum || qNum <= 2) return null;
 
-    const pairs = {
-      3: 4, 4: 3,
-      5: 6, 6: 5,
-      7: 8, 8: 7
-    };
-
-    return pairs[qNum] || null;
+    // Dynamic pairing: odd ↔ odd+1, even ↔ even-1
+    return qNum % 2 === 1 ? qNum + 1 : qNum - 1;
   }
 
   /**
-   * For a student's row data, determine which questions were actually attempted
-   * Returns a Set of column names that should be counted
+   * Case-insensitive row value lookup.
+   * Row keys from PostgreSQL preserve original column case, so we try the
+   * exact name first, then uppercase, then lowercase fallbacks.
+   */
+  _rowVal(rowData, colName) {
+    if (colName in rowData) return rowData[colName];
+    const up = colName.toUpperCase();
+    if (up in rowData) return rowData[up];
+    const lo = colName.toLowerCase();
+    if (lo in rowData) return rowData[lo];
+    return undefined;
+  }
+
+  /**
+   * Check whether a student has any non-zero mark across a group of sub-columns.
+   * (e.g. group = ['Q3A', 'Q3B'] → true if Q3A > 0 OR Q3B > 0)
+   */
+  _groupHasMarks(rowData, group) {
+    return group.some(c => {
+      const val = this._rowVal(rowData, c);
+      if (val === null || val === undefined || val === '' || val === 'NaN' || val === 'nan') return false;
+      const mark = parseFloat(val);
+      return !isNaN(mark) && mark > 0;
+    });
+  }
+
+  /**
+   * For a student's row data, determine which question sub-columns should be
+   * counted in vertical analysis.
+   *
+   * Rules:
+   *   • Non-Q columns (lab marks, AAT, QUIZ, etc.) → always counted
+   *   • Q1 and Q2 (and all their sub-parts) → always counted (compulsory)
+   *   • Q3/Q4, Q5/Q6, Q7/Q8, Q9/Q10, … → optional pairs; a student answered
+   *     ONE of the pair.  ALL sub-columns of the chosen question are counted;
+   *     sub-columns of the unchosen question are NOT counted.
+   *   • Pairing is dynamic: odd Q pairs with odd+1. Works for any Q number ≥ 3.
+   *   • A question is considered "chosen" if ANY of its sub-columns has marks > 0.
+   *   • If neither side of a pair has marks (absent / skipped), the odd-numbered
+   *     group's sub-columns are included by default (avoids zero-division).
    */
   getAttemptedQuestions(rowData, allQuestionColumns) {
     const attempted = new Set();
 
-    // Group questions by their pairs
-    const compulsory = [];
-    const optionalPairs = {
-      '3-4': [],
-      '5-6': [],
-      '7-8': []
-    };
+    // ── Step 1: bucket each column by parent question number ─────────────────
+    // questionGroups[3] = ['Q3A', 'Q3B'], questionGroups[4] = ['Q4A'], etc.
+    const questionGroups = {};   // { qNum: string[] }
+    const alwaysInclude  = [];   // non-Q columns
 
     for (const col of allQuestionColumns) {
-      const colName = col.columnName || col;
-      const colNameStr = typeof colName === 'string' ? colName : String(colName);
-      const colNameUpper = colNameStr.toUpperCase();
+      const colName = typeof col === 'string' ? col : col.columnName;
+      if (!colName) continue;
+      const upper = colName.toUpperCase();
 
-      // AAT and QUIZ are always compulsory (single columns)
-      if (colNameUpper === 'AAT' || colNameUpper === 'QUIZ') {
-        compulsory.push(colNameStr);
+      // Named special columns are always compulsory
+      if (upper === 'AAT' || upper === 'QUIZ') {
+        alwaysInclude.push(colName);
         continue;
       }
 
-      const qNum = this.extractQuestionNumber(colNameStr);
-      if (!qNum) continue;
-
-      if (qNum === 1 || qNum === 2) {
-        compulsory.push(colNameStr);
-      } else if (qNum === 3 || qNum === 4) {
-        optionalPairs['3-4'].push(colNameStr);
-      } else if (qNum === 5 || qNum === 6) {
-        optionalPairs['5-6'].push(colNameStr);
-      } else if (qNum === 7 || qNum === 8) {
-        optionalPairs['7-8'].push(colNameStr);
+      const qNum = this.extractQuestionNumber(colName);
+      if (qNum === null) {
+        // No Q-number pattern → lab / extra column → always count
+        alwaysInclude.push(colName);
+        continue;
       }
+
+      if (!questionGroups[qNum]) questionGroups[qNum] = [];
+      questionGroups[qNum].push(colName);
     }
 
-    // Always include compulsory questions (including AAT and QUIZ)
-    compulsory.forEach(q => attempted.add(q));
+    // ── Step 2: always-include columns ───────────────────────────────────────
+    alwaysInclude.forEach(c => attempted.add(c));
 
-    // For each optional pair, find which question was attempted
-    for (const [pairName, questions] of Object.entries(optionalPairs)) {
-      if (questions.length === 0) continue;
+    // ── Step 3: compulsory Q1 and Q2 (all their sub-parts) ───────────────────
+    [1, 2].forEach(n => {
+      if (questionGroups[n]) questionGroups[n].forEach(c => attempted.add(c));
+    });
 
-      // Check which question has marks > 0
-      let selectedQuestion = null;
-      let maxMarks = 0;
+    // ── Step 4: optional pairs (dynamic, works for any Q number ≥ 3) ─────────
+    const optionalNums = Object.keys(questionGroups)
+      .map(Number)
+      .filter(n => n >= 3)
+      .sort((a, b) => a - b);
 
-      for (const qCol of questions) {
-        const colUpper = qCol.toUpperCase();
-        const value = rowData[colUpper];
+    const processed = new Set();
 
-        if (value && value !== 'NaN' && value !== 'nan' && value !== '') {
-          const marks = parseFloat(value);
-          if (!isNaN(marks) && marks > maxMarks) {
-            maxMarks = marks;
-            selectedQuestion = qCol;
-          }
-        }
-      }
+    for (const qNum of optionalNums) {
+      if (processed.has(qNum)) continue;
 
-      // If a question was selected (has marks), add it
-      // Otherwise, add the first question of the pair by default (for structure)
-      if (selectedQuestion) {
-        attempted.add(selectedQuestion);
-      } else if (questions.length > 0) {
-        // No marks in either - assume student chose the first one (or skipped both)
-        // For vertical analysis, we'll handle this differently
-        attempted.add(questions[0]);
-      }
+      // Pair: odd n ↔ n+1,  even n ↔ n-1
+      const pairNum = qNum % 2 === 1 ? qNum + 1 : qNum - 1;
+      processed.add(qNum);
+      processed.add(pairNum);
+
+      const group1 = questionGroups[qNum]      || [];
+      const group2 = questionGroups[pairNum]   || [];
+
+      // Only one side present in this marksheet → always include it
+      if (group1.length === 0) { group2.forEach(c => attempted.add(c)); continue; }
+      if (group2.length === 0) { group1.forEach(c => attempted.add(c)); continue; }
+
+      // Both sides present: decide per student which they answered
+      const chose1 = this._groupHasMarks(rowData, group1);
+      const chose2 = this._groupHasMarks(rowData, group2);
+
+      if (chose1) group1.forEach(c => attempted.add(c));
+      if (chose2) group2.forEach(c => attempted.add(c));
+
+      // If neither side has marks (absent / all-zero), default to group1
+      if (!chose1 && !chose2) group1.forEach(c => attempted.add(c));
     }
 
     return attempted;
@@ -526,26 +561,37 @@ class DetailedCalculationsService {
       const verticalSum = validMarks.reduce((sum, mark) => sum + mark, 0);
       const verticalAvg = attemptsCount > 0 ? verticalSum / attemptsCount : 0;
 
-      // CO attainment calculation (threshold = max_marks * 0.6)
-      const threshold60pct = maxMarks * 0.60;
-      const studentsAboveThreshold = validMarks.filter(mark => mark >= threshold60pct).length; // B
-      const coAttainmentPercent = attemptsCount > 0 ? (studentsAboveThreshold / attemptsCount) * 100 : 0;
+      // CO attainment calculation per NBA document formula:
+      // threshold = max_marks * 0.65 (65% of max marks)
+      // B = SUM of marks of students who scored >= threshold
+      // CO_attainment = ((B / A) / max_marks) * 100
+      const thresholdPct = 65.0;
+      const thresholdMarks = maxMarks * (thresholdPct / 100);
+      const qualifyingMarks = validMarks.filter(mark => mark >= thresholdMarks);
+      const studentsAboveThreshold = qualifyingMarks.length;
+      const sumMarksAboveThreshold = qualifyingMarks.reduce((s, m) => s + m, 0); // B
+      // Document formula: ((B/A)/max_marks)*100
+      const coAttainmentPercent = attemptsCount > 0
+        ? ((sumMarksAboveThreshold / attemptsCount) / maxMarks) * 100
+        : 0;
 
       const questionType = isCompulsory ? '[COMPULSORY]' : '[OPTIONAL]';
-      console.log(`${columnName} ${questionType}: Max=${maxMarks}, A=${attemptsCount}, B=${studentsAboveThreshold}, Attainment=${coAttainmentPercent.toFixed(2)}%`);
+      console.log(`${columnName} ${questionType}: Max=${maxMarks}, A=${attemptsCount}, B_sum=${sumMarksAboveThreshold.toFixed(2)}, Above=${studentsAboveThreshold}, Attainment=${coAttainmentPercent.toFixed(2)}%`);
 
       verticalResults.push({
         courseId,
         marksheetId,
         questionColumn: columnName,
         coNumber,
-        maxMarks, // Always from mapping
+        maxMarks,
         attemptsCount,
         verticalSum,
         verticalAvg,
-        threshold60pct,
+        threshold60pct: thresholdMarks,   // keep field name for DB compat
         studentsAboveThreshold,
-        coAttainmentPercent
+        sumMarksAboveThreshold,
+        coAttainmentPercent,
+        thresholdPct
       });
     }
 
@@ -563,8 +609,9 @@ class DetailedCalculationsService {
           await client.query(`
             INSERT INTO question_vertical_analysis
             (course_id, marksheet_id, question_column, co_number, max_marks, attempts_count,
-             vertical_sum, vertical_avg, threshold_60pct, students_above_threshold, co_attainment_percent)
-            VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11)
+             vertical_sum, vertical_avg, threshold_60pct, students_above_threshold,
+             sum_marks_above_threshold, threshold_pct, co_attainment_percent)
+            VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12, $13)
           ON CONFLICT (marksheet_id, question_column) DO UPDATE SET
               co_number = EXCLUDED.co_number,
               max_marks = EXCLUDED.max_marks,
@@ -573,6 +620,8 @@ class DetailedCalculationsService {
             vertical_avg = EXCLUDED.vertical_avg,
               threshold_60pct = EXCLUDED.threshold_60pct,
             students_above_threshold = EXCLUDED.students_above_threshold,
+            sum_marks_above_threshold = EXCLUDED.sum_marks_above_threshold,
+            threshold_pct = EXCLUDED.threshold_pct,
             co_attainment_percent = EXCLUDED.co_attainment_percent,
             calculated_at = CURRENT_TIMESTAMP
         `, [
@@ -586,6 +635,8 @@ class DetailedCalculationsService {
           result.verticalAvg,
           result.threshold60pct,
           result.studentsAboveThreshold,
+          result.sumMarksAboveThreshold,
+          result.thresholdPct,
           result.coAttainmentPercent
         ]);
         }

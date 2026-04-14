@@ -2,6 +2,15 @@ import express from 'express';
 import pool from '../config/db.js';
 import { authenticateToken } from '../middleware/auth.js';
 import attainmentCalculator from '../services/attainmentCalculator.js';
+import combinedCOAttainment from '../services/combinedCOAttainment.js';
+import labCOAttainmentService from '../services/labCOAttainmentService.js';
+import cesService from '../services/cesService.js';
+import finalCOAttainmentService from '../services/finalCOAttainmentService.js';
+import mappingDerivedService from '../services/mappingDerivedService.js';
+import poAttainmentService from '../services/poAttainmentService.js';
+import psoAttainmentService from '../services/psoAttainmentService.js';
+import studentAttainmentService from '../services/studentAttainmentService.js';
+import detailedCalculationsService from '../services/detailedCalculations.js';
 
 const router = express.Router();
 
@@ -262,18 +271,54 @@ router.get('/student/:studentId/course/:courseId', authenticateToken, async (req
 
 /**
  * @route   POST /api/attainment/course/:courseId/recalculate
- * @desc    Trigger recalculation of attainment for a course
+ * @desc    Run full NBA-compliant attainment pipeline for a course:
+ *          CIA CO → Lab CO → SEE CO → CES → Final CO → CO-PO-PSO Derived → PO → PSO
  * @access  Private (Teacher only)
  */
 router.post('/course/:courseId/recalculate', authenticateToken, async (req, res) => {
   try {
     const { courseId } = req.params;
 
-    await attainmentCalculator.runFullCalculation(courseId);
+    // Step 0: Detailed per-question calculations (populates question_vertical_analysis)
+    await detailedCalculationsService.runFullCalculation(courseId);
+
+    // Step 1: CIA theory CO attainment
+    const ciaSummary = await combinedCOAttainment.calculateCombinedCOAttainment(courseId);
+
+    // Step 2: Lab CO attainment
+    await labCOAttainmentService.calculate(courseId);
+
+    // Step 3: CES — read existing ces_attainment rows WITHOUT overwriting.
+    // Manual uploads and explicit survey calculations store data in ces_attainment.
+    // The pipeline only consumes it; recalculating from survey responses here would
+    // overwrite manually-uploaded aggregate data with potentially fewer survey responses.
+    // To recalculate CES from live survey responses, use POST /ces/course/:id/calculate.
+
+    // Step 4: Final CO attainment (CIE + SEE + CES)
+    const coResults = await finalCOAttainmentService.calculate(courseId);
+
+    // Step 5: Derive CO-PO and CO-PSO mapping levels
+    await mappingDerivedService.derive(courseId);
+
+    // Step 6: PO attainment
+    const poResults = await poAttainmentService.calculate(courseId);
+
+    // Step 7: PSO attainment
+    const psoResults = await psoAttainmentService.calculate(courseId);
+
+    // Step 8: Per-student CO / PO / PSO attainment
+    const studentResults = await studentAttainmentService.calculateForCourse(courseId);
+    const uniqueStudents = new Set(studentResults.map(r => r.studentId)).size;
 
     res.json({
       success: true,
-      message: 'Attainment calculations completed successfully'
+      message: 'Full NBA attainment pipeline completed',
+      summary: {
+        co_count: coResults.length,
+        po_count: poResults.length,
+        pso_count: psoResults.length,
+        student_count: uniqueStudents
+      }
     });
   } catch (error) {
     console.error('Error recalculating attainment:', error);
@@ -634,6 +679,246 @@ router.get('/course/:courseId/co-po-mapping', authenticateToken, async (req, res
   } catch (error) {
     console.error('Error fetching CO-PO mapping:', error);
     res.status(500).json({ error: 'Failed to fetch CO-PO mapping', details: error.message });
+  }
+});
+
+// ──────────────────────────────────────────────────────────────────────────────
+// NEW V2 ATTAINMENT ENDPOINTS
+// ──────────────────────────────────────────────────────────────────────────────
+
+/**
+ * GET /api/attainment/course/:courseId/co-final
+ * Final CO attainment with full breakdown (theory/lab/CIE/SEE/CES/direct/final/level).
+ */
+router.get('/course/:courseId/co-final', authenticateToken, async (req, res) => {
+  try {
+    const { courseId } = req.params;
+    const data = await finalCOAttainmentService.getDetail(courseId);
+    res.json({ success: true, data });
+  } catch (err) {
+    console.error(err);
+    res.status(500).json({ success: false, message: err.message });
+  }
+});
+
+/**
+ * GET /api/attainment/course/:courseId/po-final
+ * Final PO attainment with derived mapping.
+ */
+router.get('/course/:courseId/po-final', authenticateToken, async (req, res) => {
+  try {
+    const { courseId } = req.params;
+    const data = await poAttainmentService.getDetail(courseId);
+    res.json({ success: true, data });
+  } catch (err) {
+    console.error(err);
+    res.status(500).json({ success: false, message: err.message });
+  }
+});
+
+/**
+ * GET /api/attainment/course/:courseId/pso
+ * PSO attainment.
+ */
+router.get('/course/:courseId/pso', authenticateToken, async (req, res) => {
+  try {
+    const { courseId } = req.params;
+    const data = await psoAttainmentService.getDetail(courseId);
+    res.json({ success: true, data });
+  } catch (err) {
+    console.error(err);
+    res.status(500).json({ success: false, message: err.message });
+  }
+});
+
+/**
+ * GET /api/attainment/course/:courseId/co-po-pso-matrix
+ * Full attainment matrix:
+ *   { co_attainment, po_attainment, pso_attainment, derived_mapping_table }
+ */
+router.get('/course/:courseId/co-po-pso-matrix', authenticateToken, async (req, res) => {
+  try {
+    const { courseId } = req.params;
+
+    const [coData, poData, psoData, derivedPO, derivedPSO, cos, pos, psos] = await Promise.all([
+      finalCOAttainmentService.getDetail(courseId),
+      poAttainmentService.getDetail(courseId),
+      psoAttainmentService.getDetail(courseId),
+      pool.query(`
+        SELECT cpd.co_id, cpd.po_id, cpd.derived_level, cpd.raw_mapping_strength, cpd.marks_pct,
+               co.co_number, po.po_number
+        FROM co_po_mapping_derived cpd
+        JOIN course_outcomes co ON cpd.co_id = co.id
+        JOIN program_outcomes po ON cpd.po_id = po.id
+        WHERE cpd.course_id = $1
+        ORDER BY co.co_number, po.po_number
+      `, [courseId]),
+      pool.query(`
+        SELECT cpd.co_id, cpd.pso_id, cpd.derived_level, cpd.raw_mapping_strength,
+               co.co_number, pso.pso_number
+        FROM co_pso_mapping_derived cpd
+        JOIN course_outcomes co ON cpd.co_id = co.id
+        JOIN pso_outcomes pso ON cpd.pso_id = pso.id
+        WHERE cpd.course_id = $1
+        ORDER BY co.co_number, pso.pso_number
+      `, [courseId]),
+      pool.query('SELECT id, co_number, description FROM course_outcomes WHERE course_id = $1 ORDER BY co_number', [courseId]),
+      pool.query('SELECT id, po_number, description FROM program_outcomes ORDER BY po_number'),
+      pool.query('SELECT id, pso_number, description FROM pso_outcomes ORDER BY pso_number')
+    ]);
+
+    res.json({
+      success: true,
+      data: {
+        cos: cos.rows,
+        pos: pos.rows,
+        psos: psos.rows,
+        coAttainment: coData,
+        poAttainment: poData,
+        psoAttainment: psoData,
+        coPoDerivedMapping: derivedPO.rows,
+        coPsoDerivedMapping: derivedPSO.rows
+      }
+    });
+  } catch (err) {
+    console.error(err);
+    res.status(500).json({ success: false, message: err.message });
+  }
+});
+
+/**
+ * GET /api/attainment/course/:courseId/config
+ * Get attainment configuration for a course.
+ */
+router.get('/course/:courseId/config', authenticateToken, async (req, res) => {
+  try {
+    const { courseId } = req.params;
+    const cfgRes = await pool.query(
+      'SELECT * FROM course_attainment_config WHERE course_id = $1',
+      [courseId]
+    );
+    const courseRes = await pool.query(
+      'SELECT course_type FROM courses WHERE id = $1',
+      [courseId]
+    );
+    res.json({
+      success: true,
+      data: {
+        ...(cfgRes.rows[0] || {}),
+        course_type: courseRes.rows[0]?.course_type || 'STANDALONE_THEORY'
+      }
+    });
+  } catch (err) {
+    res.status(500).json({ success: false, message: err.message });
+  }
+});
+
+/**
+ * PUT /api/attainment/course/:courseId/config
+ * Update attainment configuration (course type + weightages + threshold).
+ */
+router.put('/course/:courseId/config', authenticateToken, async (req, res) => {
+  try {
+    const { courseId } = req.params;
+    const {
+      course_type,
+      attainment_threshold,
+      cie_weightage,
+      see_weightage,
+      direct_weightage,
+      ces_weightage,
+      target_attainment
+    } = req.body;
+
+    // Update course type
+    if (course_type) {
+      await pool.query('UPDATE courses SET course_type = $1 WHERE id = $2', [course_type, courseId]);
+    }
+
+    // Upsert attainment config
+    await pool.query(`
+      INSERT INTO course_attainment_config
+        (course_id, attainment_threshold, cie_weightage, see_weightage,
+         direct_weightage, ces_weightage, target_attainment)
+      VALUES ($1, $2, $3, $4, $5, $6, $7)
+      ON CONFLICT (course_id) DO UPDATE SET
+        attainment_threshold = COALESCE($2, course_attainment_config.attainment_threshold),
+        cie_weightage        = COALESCE($3, course_attainment_config.cie_weightage),
+        see_weightage        = COALESCE($4, course_attainment_config.see_weightage),
+        direct_weightage     = COALESCE($5, course_attainment_config.direct_weightage),
+        ces_weightage        = COALESCE($6, course_attainment_config.ces_weightage),
+        target_attainment    = COALESCE($7, course_attainment_config.target_attainment),
+        updated_at           = CURRENT_TIMESTAMP
+    `, [courseId,
+        attainment_threshold || null, cie_weightage || null, see_weightage || null,
+        direct_weightage || null, ces_weightage || null, target_attainment || null]);
+
+    res.json({ success: true, message: 'Configuration updated' });
+  } catch (err) {
+    res.status(500).json({ success: false, message: err.message });
+  }
+});
+
+// ──────────────────────────────────────────────────────────────────────────────
+// STUDENT ATTAINMENT ENDPOINTS
+// ──────────────────────────────────────────────────────────────────────────────
+
+/**
+ * GET /api/attainment/course/:courseId/student-attainment
+ * All students × all COs — the heat-map grid for teachers.
+ */
+router.get('/course/:courseId/student-attainment', authenticateToken, async (req, res) => {
+  try {
+    const { courseId } = req.params;
+    const data = await studentAttainmentService.getAllStudentsCoAttainment(courseId);
+
+    // Also pull COs list so the frontend can build column headers
+    const cosRes = await pool.query(
+      'SELECT id, co_number, description FROM course_outcomes WHERE course_id = $1 ORDER BY co_number',
+      [courseId]
+    );
+
+    res.json({ success: true, data, cos: cosRes.rows });
+  } catch (err) {
+    console.error(err);
+    res.status(500).json({ success: false, message: err.message });
+  }
+});
+
+/**
+ * GET /api/attainment/course/:courseId/students/:studentId/attainment
+ * Full CO + PO + PSO breakdown for one student (teacher or that student).
+ */
+router.get('/course/:courseId/students/:studentId/attainment', authenticateToken, async (req, res) => {
+  try {
+    const { courseId, studentId } = req.params;
+
+    // A student may only access their own data; teachers can access anyone's
+    if (req.user.role === 'student' && req.user.id !== studentId) {
+      return res.status(403).json({ success: false, message: 'Access denied' });
+    }
+
+    const data = await studentAttainmentService.getStudentFullAttainment(courseId, studentId);
+    res.json({ success: true, data });
+  } catch (err) {
+    console.error(err);
+    res.status(500).json({ success: false, message: err.message });
+  }
+});
+
+/**
+ * GET /api/attainment/course/:courseId/my-attainment
+ * Student endpoint — returns the calling student's own attainment.
+ */
+router.get('/course/:courseId/my-attainment', authenticateToken, async (req, res) => {
+  try {
+    const { courseId } = req.params;
+    const studentId = req.user.id;
+    const data = await studentAttainmentService.getStudentFullAttainment(courseId, studentId);
+    res.json({ success: true, data });
+  } catch (err) {
+    console.error(err);
+    res.status(500).json({ success: false, message: err.message });
   }
 });
 

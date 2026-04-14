@@ -13,7 +13,6 @@ import {
   User,
   Sparkles,
   TrendingUp,
-  ClipboardList,
 } from 'lucide-react';
 import { motion, AnimatePresence } from 'framer-motion';
 import { useAuth } from '../contexts/AuthContext';
@@ -50,7 +49,6 @@ const TeacherLayout = () => {
   const menuItems = [
     { label: 'Dashboard', path: '/teacher/dashboard', icon: LayoutDashboard },
     { label: 'Upload Marks', path: '/teacher/upload', icon: Upload },
-    { label: 'SEE Upload', path: '/teacher/see-upload', icon: ClipboardList },
     { label: 'CO Generator', path: '/teacher/co-generator', icon: Sparkles },
     { label: 'Courses', path: '/teacher/courses', icon: GraduationCap },
     { label: 'Analytics', path: '/teacher/analytics', icon: BarChart3 },

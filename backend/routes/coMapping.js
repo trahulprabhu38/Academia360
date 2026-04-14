@@ -157,19 +157,29 @@ router.delete('/marksheet/:marksheetId', authMiddleware, async (req, res) => {
  * New format: Column, Max Marks, CO
  */
 router.get('/template', (req, res) => {
+  // Template shows the flexible A/B sub-question format.
+  // Rules:
+  //   • Each row maps ONE column to ONE CO with its max marks.
+  //   • A question can be a single column (q1a=10) or split into A+B sub-parts
+  //     with any mark split (6+4, 5+5, 4+6, etc.).
+  //   • Columns with Max Marks = 0 are skipped during calculation.
+  //   • Q1 / Q2 are compulsory; Q3/Q4, Q5/Q6, Q7/Q8 are optional pairs.
+  //   • Sub-question pairs are detected automatically — q3a and q3b both belong
+  //     to Q3, so ALL sub-parts of the student's chosen question are counted.
   const template = `Column,Max Marks,CO
-q1a,10,co1
-q1b,0,co1
+q1a,6,co1
+q1b,4,co1
 q2a,10,co3
-q2b,0,co3
-q3a,10,co2
-q3b,10,co2
-q4a,10,co4
-q4b,10,co4
+q3a,5,co2
+q3b,5,co2
+q4a,6,co4
+q4b,4,co4
 q5a,10,co5
-q5b,10,co5
-q6a,10,co6
-q6b,10,co6`;
+q6a,5,co6
+q6b,5,co6
+q7a,10,co1
+q8a,5,co2
+q8b,5,co2`;
 
   res.setHeader('Content-Type', 'text/csv');
   res.setHeader('Content-Disposition', 'attachment; filename="co-mapping-template.csv"');

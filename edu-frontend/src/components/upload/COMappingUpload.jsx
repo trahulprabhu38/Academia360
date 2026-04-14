@@ -302,32 +302,36 @@ const COMappingUpload = ({ courseId, marksheet }) => {
         {/* No Mappings State */}
         {!loadingMappings && existingMappings.length === 0 && (
           <div className="mt-4 p-4 bg-warning-50 dark:bg-warning-900/20 border-2 border-warning-200 dark:border-warning-800 rounded-xl">
+            <p className="text-xs font-semibold text-warning-700 dark:text-warning-400 mb-1">
+              No CO mapping uploaded yet
+            </p>
             <p className="text-xs text-neutral-600 dark:text-dark-text-secondary">
-              <strong>⚠️ No CO mapping uploaded yet</strong>
-              <br />
-              Please upload a CO mapping CSV file to map questions to Course Outcomes.
+              Upload a CSV to map each question column to a Course Outcome.
             </p>
           </div>
         )}
 
-        {/* Instructions
-        <div className="mt-4 p-4 bg-neutral-100 dark:bg-dark-bg-tertiary border-2 border-neutral-200 dark:border-dark-border rounded-xl">
-          <p className="text-xs text-neutral-600 dark:text-dark-text-secondary leading-relaxed">
-            <strong>CSV Format (New):</strong>
-            <br />
-            • Column 1: Column name (e.g., q1a, q1b, q2a) - lowercase
-            <br />
-            • Column 2: Max Marks (e.g., 10, 0) - use 0 to ignore a question
-            <br />
-            • Column 3: CO (e.g., co1, co2, co3)
-            <br />
-            • Example: q1a,10,co1
-            <br />
-            • Questions with max_marks = 0 will be ignored
-            <br />
-            • Download the template above to see the format
+        {/* Format hint */}
+        <div className="mt-4 p-4 bg-neutral-50 dark:bg-dark-bg-tertiary border border-neutral-200 dark:border-dark-border rounded-xl space-y-2">
+          <p className="text-xs font-semibold text-neutral-700 dark:text-dark-text-primary">CSV format: <span className="font-mono font-normal">Column, Max Marks, CO</span></p>
+          <div className="grid grid-cols-2 gap-x-6 gap-y-1 text-xs text-neutral-600 dark:text-dark-text-secondary">
+            <div>
+              <p className="font-semibold text-neutral-700 dark:text-dark-text-primary mb-0.5">Single 10-mark question</p>
+              <code className="block font-mono bg-neutral-100 dark:bg-dark-bg-secondary px-2 py-1 rounded text-[0.65rem]">
+                q1a,10,co1
+              </code>
+            </div>
+            <div>
+              <p className="font-semibold text-neutral-700 dark:text-dark-text-primary mb-0.5">Split A+B (any marks, any Q)</p>
+              <code className="block font-mono bg-neutral-100 dark:bg-dark-bg-secondary px-2 py-1 rounded text-[0.65rem]">
+                q3a,6,co2{"\n"}q3b,4,co2
+              </code>
+            </div>
+          </div>
+          <p className="text-[0.65rem] text-neutral-500 dark:text-dark-text-muted">
+            Q1 &amp; Q2 are always compulsory. Q3/Q4, Q5/Q6, Q7/Q8… are optional pairs — all sub-parts of the student's chosen question are counted automatically. Max marks can be any value (e.g. 6+4, 5+5).
           </p>
-        </div> */}
+        </div>
       </CardContent>
     </Card>
   );
