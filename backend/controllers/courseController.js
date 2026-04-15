@@ -72,13 +72,16 @@ export const createCourse = async (req, res) => {
       return res.status(403).json({ success: false, message: 'Invalid or missing teacher account' });
     }
 
-    const { code, name, description, semester, year, credits } = req.body;
+    const { code, name, description, semester, year, credits, course_type } = req.body;
     if (!code || !name || !semester || !year) {
       return res.status(400).json({
         success: false,
         message: 'Code, name, semester, and year are required'
       });
     }
+
+    const validTypes = ['STANDALONE_THEORY', 'STANDALONE_LAB', 'IPCC'];
+    const courseType = validTypes.includes(course_type) ? course_type : 'STANDALONE_THEORY';
 
     // Check if course code already exists
     const existing = await query('SELECT id FROM courses WHERE code = $1', [code]);
@@ -90,10 +93,10 @@ export const createCourse = async (req, res) => {
     }
 
     const result = await query(
-      `INSERT INTO courses (code, name, description, semester, year, credits, teacher_id)
-       VALUES ($1, $2, $3, $4, $5, $6, $7)
+      `INSERT INTO courses (code, name, description, semester, year, credits, teacher_id, course_type)
+       VALUES ($1, $2, $3, $4, $5, $6, $7, $8)
        RETURNING *`,
-      [code, name, description || null, semester, year, credits || 3, teacherId]
+      [code, name, description || null, semester, year, credits || 3, teacherId, courseType]
     );
 
     res.status(201).json({
@@ -240,7 +243,7 @@ export const updateCourse = async (req, res) => {
   try {
     const { id } = req.params;
     const teacherId = req.user.id;
-    const { name, description, semester, year, credits } = req.body;
+    const { name, description, semester, year, credits, course_type } = req.body;
 
     // Check if course exists and belongs to teacher
     const courseCheck = await query(
@@ -255,6 +258,9 @@ export const updateCourse = async (req, res) => {
       });
     }
 
+    const validTypes = ['STANDALONE_THEORY', 'STANDALONE_LAB', 'IPCC'];
+    const courseType = validTypes.includes(course_type) ? course_type : null;
+
     const result = await query(
       `UPDATE courses
        SET name = COALESCE($1, name),
@@ -262,10 +268,11 @@ export const updateCourse = async (req, res) => {
            semester = COALESCE($3, semester),
            year = COALESCE($4, year),
            credits = COALESCE($5, credits),
+           course_type = COALESCE($6, course_type),
            updated_at = CURRENT_TIMESTAMP
-       WHERE id = $6
+       WHERE id = $7
        RETURNING *`,
-      [name, description, semester, year, credits, id]
+      [name, description, semester, year, credits, courseType, id]
     );
 
     res.json({

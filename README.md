@@ -145,3 +145,7 @@ open http://localhost:7474           # Neo4j Browser
 - For bugs/issues: open a GitHub issue. For architecture: see Mermaid diagram and docker-compose.yml.
 
 ---
+
+
+
+ docker exec -i postgre psql -U admin -d edu < backend/migrations/001_initial_schema.sql      

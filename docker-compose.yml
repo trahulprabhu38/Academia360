@@ -1,5 +1,3 @@
-version: "3.9"
-
 services:
   # --- MongoDB ---
   mongodb:
@@ -46,7 +44,7 @@ services:
 
   # --- ChromaDB Vector Database ---
   chromadb:
-    image: ghcr.io/chroma-core/chroma:0.4.24
+    image: chromadb/chroma:0.4.24
     container_name: chromadb
     hostname: chromadb
     ports:

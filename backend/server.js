@@ -28,6 +28,7 @@ import progressionRoutes from './routes/progression.js';
 import semesterSubjectsRoutes from './routes/semesterSubjects.js';
 import materialsRoutes from './routes/materials.js';
 import chatRoutes from './routes/chat.js';
+import cesRoutes from './routes/ces.js';
 
 // Load environment variables
 dotenv.config();
@@ -73,6 +74,7 @@ app.use('/api/semester-subjects', semesterSubjectsRoutes);
 app.use('/api/teacher', courseRoutes);
 app.use('/api/materials', materialsRoutes);
 app.use('/api/chat', chatRoutes);
+app.use('/api/ces', cesRoutes);
 
 
 // 404 handler

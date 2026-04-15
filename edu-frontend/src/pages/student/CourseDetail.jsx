@@ -26,8 +26,10 @@ import {
   XCircle,
   FolderOpen,
   MessageCircle,
+  ClipboardList,
 } from 'lucide-react';
 import { studentAPI, courseAPI } from '../../services/api';
+import MyAttainment from '../../components/attainment/MyAttainment';
 import PageLayout from '../../components/shared/PageLayout';
 import { PageLoader } from '../../components/shared/Loading';
 import { ErrorState } from '../../components/shared/ErrorState';
@@ -137,10 +139,16 @@ const CourseDetail = () => {
         { label: courseInfo?.name || 'Course' },
       ]}
       actions={
-        <Button variant="outline" onClick={() => navigate('/student/dashboard')}>
-          <ArrowLeft className="w-4 h-4 mr-2" />
-          Back
-        </Button>
+        <div className="flex gap-2">
+          <Button variant="outline" onClick={() => navigate('/student/dashboard')}>
+            <ArrowLeft className="w-4 h-4 mr-2" />
+            Back
+          </Button>
+          <Button variant="outline" onClick={() => navigate(`/student/courses/${courseId}/exit-survey`)}>
+            <ClipboardList className="w-4 h-4 mr-2" />
+            Exit Survey
+          </Button>
+        </div>
       }
     >
       {/* Overall Stats */}
@@ -224,6 +232,16 @@ const CourseDetail = () => {
               }`}
             >
               Materials & Chat
+            </button>
+            <button
+              onClick={() => setTabValue(5)}
+              className={`px-4 py-3 border-b-2 transition-colors ${
+                tabValue === 5
+                  ? 'border-primary-500 dark:border-dark-green-500 text-primary-600 dark:text-dark-green-500 font-semibold'
+                  : 'border-transparent text-neutral-600 dark:text-dark-text-secondary hover:text-neutral-800 dark:hover:text-dark-text-primary'
+              }`}
+            >
+              My Attainment
             </button>
           </div>
         </div>
@@ -665,6 +683,11 @@ const CourseDetail = () => {
         <div>
           <Recommendations courseId={courseId} courseCode={courseInfo?.code} />
         </div>
+      )}
+
+      {/* Tab 5: My Attainment */}
+      {tabValue === 5 && (
+        <MyAttainment courseId={courseId} />
       )}
 
       {/* Tab 4: Materials & Chat */}

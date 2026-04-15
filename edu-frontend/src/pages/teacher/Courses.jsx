@@ -35,6 +35,7 @@ const Courses = () => {
     semester: '',
     year: '',
     credits: 3,
+    course_type: 'STANDALONE_THEORY',
   });
 
   useEffect(() => {
@@ -66,6 +67,7 @@ const Courses = () => {
         semester: course.semester,
         year: course.year,
         credits: course.credits || 3,
+        course_type: course.course_type || 'STANDALONE_THEORY',
       });
     } else {
       setEditMode(false);
@@ -77,6 +79,7 @@ const Courses = () => {
         semester: '',
         year: new Date().getFullYear(),
         credits: 3,
+        course_type: 'STANDALONE_THEORY',
       });
     }
     setDialogOpen(true);
@@ -401,12 +404,92 @@ const Courses = () => {
                   <Input
                     type="number"
                     value={formData.credits}
-                    onChange={(e) => setFormData({ ...formData, credits: parseInt(e.target.value) })}
+                    onChange={(e) => {
+                      const credits = parseInt(e.target.value);
+                      // Reset course_type when credits change
+                      const newType = formData.course_type === 'STANDALONE_LAB'
+                        ? 'STANDALONE_LAB'
+                        : 'STANDALONE_THEORY';
+                      setFormData({ ...formData, credits, course_type: newType });
+                    }}
                     required
                     min={1}
                     max={6}
                   />
                 </div>
+
+                {/* Lab toggle — only relevant for 4-credit courses */}
+                {formData.credits === 4 && (
+                  <div className="rounded-xl border border-neutral-200 dark:border-dark-border p-4 bg-neutral-50 dark:bg-dark-bg-secondary">
+                    <div className="flex items-center justify-between">
+                      <div>
+                        <p className="text-sm font-medium text-neutral-800 dark:text-dark-text-primary">
+                          Has Integrated Lab (IPCC)
+                        </p>
+                        <p className="text-xs text-neutral-500 dark:text-dark-text-secondary mt-0.5">
+                          4-credit courses can have a combined theory + lab component. Enable this if the course has a lab section whose marks count toward final attainment.
+                        </p>
+                      </div>
+                      <button
+                        type="button"
+                        onClick={() => setFormData({
+                          ...formData,
+                          course_type: formData.course_type === 'IPCC' ? 'STANDALONE_THEORY' : 'IPCC',
+                        })}
+                        className={`relative inline-flex h-6 w-11 shrink-0 cursor-pointer rounded-full border-2 border-transparent transition-colors focus:outline-none ${
+                          formData.course_type === 'IPCC'
+                            ? 'bg-primary-500 dark:bg-dark-green-500'
+                            : 'bg-neutral-300 dark:bg-dark-bg-tertiary'
+                        }`}
+                      >
+                        <span
+                          className={`pointer-events-none inline-block h-5 w-5 rounded-full bg-white shadow transform transition-transform ${
+                            formData.course_type === 'IPCC' ? 'translate-x-5' : 'translate-x-0'
+                          }`}
+                        />
+                      </button>
+                    </div>
+                    {formData.course_type === 'IPCC' && (
+                      <p className="mt-2 text-xs font-medium text-primary-600 dark:text-dark-green-400">
+                        Lab marks will be uploaded separately and combined with theory CIE for attainment.
+                      </p>
+                    )}
+                  </div>
+                )}
+
+                {/* Standalone lab — for 1-2 credit pure lab courses */}
+                {formData.credits <= 2 && (
+                  <div className="rounded-xl border border-neutral-200 dark:border-dark-border p-4 bg-neutral-50 dark:bg-dark-bg-secondary">
+                    <div className="flex items-center justify-between">
+                      <div>
+                        <p className="text-sm font-medium text-neutral-800 dark:text-dark-text-primary">
+                          Pure Lab Course
+                        </p>
+                        <p className="text-xs text-neutral-500 dark:text-dark-text-secondary mt-0.5">
+                          Enable if this is a standalone lab course with no theory component.
+                        </p>
+                      </div>
+                      <button
+                        type="button"
+                        onClick={() => setFormData({
+                          ...formData,
+                          course_type: formData.course_type === 'STANDALONE_LAB' ? 'STANDALONE_THEORY' : 'STANDALONE_LAB',
+                        })}
+                        className={`relative inline-flex h-6 w-11 shrink-0 cursor-pointer rounded-full border-2 border-transparent transition-colors focus:outline-none ${
+                          formData.course_type === 'STANDALONE_LAB'
+                            ? 'bg-primary-500 dark:bg-dark-green-500'
+                            : 'bg-neutral-300 dark:bg-dark-bg-tertiary'
+                        }`}
+                      >
+                        <span
+                          className={`pointer-events-none inline-block h-5 w-5 rounded-full bg-white shadow transform transition-transform ${
+                            formData.course_type === 'STANDALONE_LAB' ? 'translate-x-5' : 'translate-x-0'
+                          }`}
+                        />
+                      </button>
+                    </div>
+                  </div>
+                )}
               </div>
 
               {/* Actions */}

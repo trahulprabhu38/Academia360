@@ -43,7 +43,7 @@ class SEEMarksService {
 
       for (const entry of marksData) {
         try {
-          const { usn, see_marks } = entry;
+          const { usn, see_marks, see_grade } = entry;
 
           // Validate data
           if (!usn || see_marks === null || see_marks === undefined) {
@@ -65,6 +65,9 @@ class SEEMarksService {
             results.failed++;
             continue;
           }
+
+          // Normalize grade (uppercase, trim) — null if not provided
+          const grade = see_grade ? see_grade.toString().trim().toUpperCase() : null;
 
           // Find student by USN
           const studentQuery = await client.query(
@@ -99,17 +102,18 @@ class SEEMarksService {
             continue;
           }
 
-          // Insert or update SEE marks
+          // Insert or update SEE marks (including grade)
           const upsertQuery = `
             INSERT INTO see_marks (
-              student_id, course_id, see_marks_obtained, uploaded_by, upload_date
-            ) VALUES ($1, $2, $3, $4, CURRENT_TIMESTAMP)
+              student_id, course_id, see_marks_obtained, see_grade, uploaded_by, upload_date
+            ) VALUES ($1, $2, $3, $4, $5, CURRENT_TIMESTAMP)
             ON CONFLICT (student_id, course_id)
             DO UPDATE SET
               see_marks_obtained = EXCLUDED.see_marks_obtained,
-              uploaded_by = EXCLUDED.uploaded_by,
-              upload_date = CURRENT_TIMESTAMP,
-              updated_at = CURRENT_TIMESTAMP
+              see_grade          = EXCLUDED.see_grade,
+              uploaded_by        = EXCLUDED.uploaded_by,
+              upload_date        = CURRENT_TIMESTAMP,
+              updated_at         = CURRENT_TIMESTAMP
             RETURNING (xmax = 0) AS inserted
           `;
 
@@ -117,15 +121,16 @@ class SEEMarksService {
             studentId,
             courseId,
             marks,
+            grade,
             uploadedBy
           ]);
 
           if (result.rows[0].inserted) {
             results.uploaded++;
-            console.log(`  ✓ Uploaded SEE marks for ${usn} (${studentName}): ${marks}/100`);
+            console.log(`  ✓ Uploaded SEE marks for ${usn} (${studentName}): ${marks}/100 grade=${grade || '-'}`);
           } else {
             results.updated++;
-            console.log(`  ↻ Updated SEE marks for ${usn} (${studentName}): ${marks}/100`);
+            console.log(`  ↻ Updated SEE marks for ${usn} (${studentName}): ${marks}/100 grade=${grade || '-'}`);
           }
 
         } catch (err) {
@@ -365,6 +370,15 @@ class SEEMarksService {
           errors.push('SEE marks must be a number');
         } else if (marks < 0 || marks > 100) {
           errors.push('SEE marks must be between 0 and 100');
+        }
+      }
+
+      // see_grade is optional — if provided, must be a known VTU grade code
+      const VALID_GRADES = ['S', 'A', 'A+', 'B', 'B+', 'C', 'D', 'E', 'O', 'P', 'F'];
+      if (entry.see_grade !== null && entry.see_grade !== undefined && entry.see_grade !== '') {
+        const g = entry.see_grade.toString().trim().toUpperCase();
+        if (!VALID_GRADES.includes(g)) {
+          errors.push(`Invalid grade: ${entry.see_grade} (expected one of ${VALID_GRADES.join(', ')})`);
         }
       }
 

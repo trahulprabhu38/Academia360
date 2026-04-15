@@ -22,10 +22,14 @@ import {
   BadgeCheck,
   Plus,
   ChevronDown,
+  ChevronUp,
   FolderOpen,
   MessageCircle,
+  ClipboardList,
+  FileQuestion,
 } from 'lucide-react';
 import { courseAPI, marksheetAPI, aiCOAPI, courseOutcomesAPI } from '../../services/api';
+import CESAdmin from './CESAdmin';
 import PageLayout from '../../components/shared/PageLayout';
 import { PageLoader } from '../../components/shared/Loading';
 import { ErrorState, EmptyState } from '../../components/shared/ErrorState';
@@ -59,6 +63,9 @@ const CourseDetail = () => {
   // Student pagination state
   const [studentPage, setStudentPage] = useState(0);
   const studentsPerPage = 10;
+
+  // CO section expand/collapse
+  const [coExpanded, setCOExpanded] = useState(true);
 
   // AI-generated COs state
   const [aiCOs, setAICOs] = useState([]);
@@ -235,6 +242,13 @@ const CourseDetail = () => {
             View Dashboard
           </Button>
           <Button
+            variant="outline"
+            onClick={() => navigate(`/teacher/courses/${id}/attainment`)}
+          >
+            <TrendingUp className="w-4 h-4 mr-2" />
+            CO/PO/PSO Attainment
+          </Button>
+          <Button
             onClick={() => navigate('/teacher/upload')}
             className="bg-gradient-to-r from-primary-500 to-secondary-500 dark:from-dark-green-500 dark:to-secondary-600"
           >
@@ -356,14 +370,18 @@ const CourseDetail = () => {
         transition={{ duration: 0.4, delay: 0.1 }}
       >
         <Card
-          className={`mb-8 ${
+          className={`mb-8 transition-all duration-300 ${
             aiCOs.length > 0
               ? 'border-2 border-primary-500 dark:border-dark-green-500 bg-gradient-to-br from-primary-50/30 to-secondary-50/20 dark:from-primary-900/10 dark:to-secondary-900/10'
               : ''
           }`}
         >
           <CardContent className="p-6">
-            <div className="flex justify-between items-start mb-6 flex-wrap gap-4">
+            {/* Clickable header — collapses / expands the CO grid */}
+            <div
+              className="flex justify-between items-start mb-0 flex-wrap gap-4 cursor-pointer select-none"
+              onClick={() => setCOExpanded(prev => !prev)}
+            >
               <div className="flex items-center gap-4">
                 <div className="w-12 h-12 rounded-xl bg-gradient-to-br from-primary-500 to-secondary-500 dark:from-dark-green-500 dark:to-secondary-600 flex items-center justify-center">
                   <Sparkles className="w-7 h-7 text-white" />
@@ -379,7 +397,7 @@ const CourseDetail = () => {
                   </p>
                 </div>
               </div>
-              <div className="flex gap-2">
+              <div className="flex items-center gap-2" onClick={e => e.stopPropagation()}>
                 {aiCOs.length === 0 && (
                   <>
                     <Button
@@ -418,8 +436,20 @@ const CourseDetail = () => {
                     </Button>
                   </>
                 )}
+                <button
+                  onClick={() => setCOExpanded(prev => !prev)}
+                  className="p-2 rounded-lg hover:bg-neutral-100 dark:hover:bg-dark-bg-tertiary transition-colors"
+                  title={coExpanded ? 'Collapse' : 'Expand'}
+                >
+                  {coExpanded
+                    ? <ChevronUp className="w-5 h-5 text-neutral-500" />
+                    : <ChevronDown className="w-5 h-5 text-neutral-500" />}
+                </button>
               </div>
             </div>
+
+            {/* Collapsible content */}
+            <div className={`overflow-hidden transition-all duration-300 ${coExpanded ? 'mt-6' : 'max-h-0 mt-0 opacity-0 pointer-events-none'}`}>
 
             {loadingAICOs ? (
               <div className="flex justify-center py-8">
@@ -567,6 +597,7 @@ const CourseDetail = () => {
                 </div>
               </>
             )}
+            </div>{/* end collapsible wrapper */}
           </CardContent>
         </Card>
       </motion.div>
@@ -607,6 +638,17 @@ const CourseDetail = () => {
             >
               <FolderOpen className="w-4 h-4" />
               Materials & Chat
+            </button>
+            <button
+              onClick={() => setActiveTab(3)}
+              className={`flex items-center gap-2 px-4 py-3 border-b-2 transition-colors ${
+                activeTab === 3
+                  ? 'border-primary-500 dark:border-dark-green-500 text-primary-600 dark:text-dark-green-500 font-semibold'
+                  : 'border-transparent text-neutral-600 dark:text-dark-text-secondary hover:text-neutral-800 dark:hover:text-dark-text-primary'
+              }`}
+            >
+              <ClipboardList className="w-4 h-4" />
+              Course Exit Survey
             </button>
           </div>
         </div>
@@ -826,6 +868,13 @@ const CourseDetail = () => {
                 <CourseChat courseId={id} />
               </div>
             </div>
+          </CardContent>
+        )}
+
+        {/* Course Exit Survey Tab */}
+        {activeTab === 3 && (
+          <CardContent className="p-0">
+            <CESAdmin courseId={id} embedded={true} />
           </CardContent>
         )}
       </Card>

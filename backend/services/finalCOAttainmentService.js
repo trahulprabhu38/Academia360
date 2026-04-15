@@ -13,12 +13,13 @@ import cesService from './cesService.js';
  * processed through question_vertical_analysis alongside theory marks. The combined CIA
  * map already reflects all assessment marks (theory + lab) per CO via per-question averages.
  *
- * Final formula (NBA document):
+ * Final formula (NBA / spreadsheet standard):
  *   CIE_CO  = combinedCIAMap[co]   ← already includes lab questions for IPCC/LAB courses
- *   Direct  = (cie_weight/100) × CIE_CO + (see_weight/100) × SEE_CO
- *   Final   = (direct_weight/100) × Direct + (ces_weight/100) × CES_pct
+ *   Direct  = (cie_w/100) × CIE + (see_w/100) × SEE
+ *   Final   = Direct + (ces_w/100) × CES         ← flat, not two-level
+ *   (if no CES: Final = Direct / (cie_w+see_w) × 100  — normalized to full scale)
  *
- *   Defaults: cie=60, see=40, direct=90, ces=10
+ *   Defaults: cie=70, see=20, ces=10  (70:20:10 split, sums to 100%)
  *
  * Attainment levels (target = 60%):
  *   final >= 80 → Level 3
@@ -35,8 +36,11 @@ class FinalCOAttainmentService {
       [courseId]
     );
     if (res.rows.length === 0) {
+      // Insert with NBA-standard defaults: CIE=70%, SEE=20%, CES=10%
       await pool.query(`
-        INSERT INTO course_attainment_config (course_id) VALUES ($1)
+        INSERT INTO course_attainment_config
+          (course_id, cie_weightage, see_weightage, ces_weightage, direct_weightage, target_attainment)
+        VALUES ($1, 70, 20, 10, 90, 60)
         ON CONFLICT (course_id) DO NOTHING
       `, [courseId]);
       res = await pool.query(
@@ -70,11 +74,11 @@ class FinalCOAttainmentService {
       this._getCourseType(courseId)
     ]);
 
-    const cieW    = parseFloat(cfg.cie_weightage)    / 100;
-    const seeW    = parseFloat(cfg.see_weightage)    / 100;
-    const directW = parseFloat(cfg.direct_weightage) / 100;
-    const cesW    = parseFloat(cfg.ces_weightage)    / 100;
-    const target  = parseFloat(cfg.target_attainment);
+    // Flat formula weights (must sum to 100): CIE=70, SEE=20, CES=10
+    const cieW   = parseFloat(cfg.cie_weightage) / 100;  // e.g. 0.70
+    const seeW   = parseFloat(cfg.see_weightage) / 100;  // e.g. 0.20
+    const cesW   = parseFloat(cfg.ces_weightage) / 100;  // e.g. 0.10
+    const target = parseFloat(cfg.target_attainment);
 
     // 1. Gather all source attainments
     //    combinedCIAMap: reads question_vertical_analysis for ALL marksheets (theory + lab).
@@ -106,20 +110,23 @@ class FinalCOAttainmentService {
       const see     = seeMap[n]         || 0;
       const cesInfo = cesMap[n]         || { ces_pct: 0, has_data: false };
 
+      // Flat formula: Direct = cieW*CIE + seeW*SEE  (contributes cieW+seeW of the total scale)
       const direct = cieW * cie + seeW * see;
 
-      // Only apply CES if it has data; otherwise use 100% direct weight
+      // Final = Direct + cesW*CES  (flat sum, all weights sum to 100%)
+      // If no CES data: normalize direct to full 100% scale (divide by cieW+seeW)
       let final;
       if (cesInfo.has_data) {
-        final = directW * direct + cesW * cesInfo.ces_pct;
+        final = direct + cesW * cesInfo.ces_pct;  // e.g. 0.7*CIE + 0.2*SEE + 0.1*CES
       } else {
-        final = direct; // no CES data → direct attainment = final
+        const directWeightSum = cieW + seeW;  // e.g. 0.9
+        final = directWeightSum > 0 ? direct / directWeightSum : 0;
       }
 
       const level     = this._classifyLevel(final, target);
       const isAttained = final >= target;
 
-      console.log(`  CO${n}: CIE=${cie.toFixed(2)} (lab_display=${labCIA.toFixed(2)}), SEE=${see.toFixed(2)}, CES=${cesInfo.ces_pct.toFixed(2)}, Direct=${direct.toFixed(2)}, Final=${final.toFixed(2)}, L${level}`);
+      console.log(`  CO${n}: CIE=${cie.toFixed(2)}, SEE=${see.toFixed(2)}, CES=${cesInfo.ces_pct.toFixed(2)}, Direct=${direct.toFixed(2)}, Final=${final.toFixed(2)}, L${level}`);
 
       output.push({
         co_id: co.id,

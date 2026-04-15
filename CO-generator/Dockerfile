@@ -16,8 +16,11 @@ RUN apt-get update && apt-get install -y \
 # Copy requirements
 COPY requirements.txt .
 
-# Install Python dependencies
-RUN pip install --no-cache-dir --user -r requirements.txt
+# Upgrade pip first, then install CPU-only PyTorch, then remaining deps
+RUN pip install --upgrade pip && \
+    pip install --no-cache-dir --user --timeout 300 \
+    torch --index-url https://download.pytorch.org/whl/cpu && \
+    pip install --no-cache-dir --user --timeout 300 -r requirements.txt
 
 # ============================================================================
 # Production stage

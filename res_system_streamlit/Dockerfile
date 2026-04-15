@@ -10,7 +10,8 @@ RUN apt-get update && apt-get install -y \
 
 # Copy requirements and install Python dependencies
 COPY requirements.txt .
-RUN pip install --no-cache-dir -r requirements.txt
+RUN pip install --upgrade pip && \
+    pip install --no-cache-dir --timeout 300 -r requirements.txt
 
 # Install FastAPI and uvicorn
 RUN pip install --no-cache-dir fastapi uvicorn[standard] pydantic

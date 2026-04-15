@@ -20,8 +20,12 @@ import StudentProgression from "./pages/teacher/StudentProgression";
 
 import DynamicDashboard from "./pages/teacher/DynamicDashboard";
 import COGenerator from "./pages/teacher/COGenerator";
+import AttainmentDashboard from "./pages/teacher/AttainmentDashboard";
+import CESAdmin from "./pages/teacher/CESAdmin";
+import SEEQuestionMapping from "./pages/teacher/SEEQuestionMapping";
 
 // Student Pages
+import CourseExitSurvey from "./pages/student/CourseExitSurvey";
 import StudentDashboard from "./pages/student/Dashboard";
 import StudentCourses from "./pages/student/Courses";
 import StudentCourseDetail from "./pages/student/CourseDetail";
@@ -108,6 +112,9 @@ const AppContent = () => {
                   {/* <Route path="upload-old" element={<UploadMarks />} /> */}
                   {/* <Route path="static-analysis" element={<StaticAnalysis />} /> */}
                   <Route path="attainment/:courseId" element={<DynamicDashboard />} />
+                  <Route path="courses/:id/attainment" element={<AttainmentDashboard />} />
+                  <Route path="courses/:id/ces" element={<CESAdmin />} />
+                  <Route path="courses/:id/see-mapping" element={<SEEQuestionMapping />} />
                   <Route path="settings" element={<Settings />} />
                   <Route index element={<Navigate to="dashboard" replace />} />
                 </Route>
@@ -124,6 +131,7 @@ const AppContent = () => {
                   <Route path="courses" element={<StudentCourses />} />
                   <Route path="courses/:courseId" element={<StudentCourseDetail />} />
                   <Route path="courses/:courseId/analytics" element={<StudentCourseAnalytics />} />
+                  <Route path="courses/:courseId/exit-survey" element={<CourseExitSurvey />} />
                   <Route path="dbms-recommender" element={<DBMSRecommender />} />
                   {/* <Route path="analysis" element={<Analysis />} /> */}
                   <Route path="settings" element={<Settings />} />

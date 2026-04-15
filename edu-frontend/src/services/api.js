@@ -234,4 +234,58 @@ export const chatAPI = {
   deleteMessage: (messageId) => api.delete(`/chat/messages/${messageId}`),
 };
 
+// ── V2 Attainment APIs ────────────────────────────────────────────────────────
+export const attainmentV2API = {
+  // Full pipeline recalculation
+  recalculate: (courseId) => api.post(`/attainment/course/${courseId}/recalculate`),
+
+  // Final CO attainment with breakdown
+  getCOFinal: (courseId) => api.get(`/attainment/course/${courseId}/co-final`),
+
+  // PO attainment
+  getPOFinal: (courseId) => api.get(`/attainment/course/${courseId}/po-final`),
+
+  // PSO attainment
+  getPSO: (courseId) => api.get(`/attainment/course/${courseId}/pso`),
+
+  // Full CO-PO-PSO matrix
+  getMatrix: (courseId) => api.get(`/attainment/course/${courseId}/co-po-pso-matrix`),
+
+  // Attainment config
+  getConfig: (courseId) => api.get(`/attainment/course/${courseId}/config`),
+  updateConfig: (courseId, data) => api.put(`/attainment/course/${courseId}/config`, data),
+
+  // Student attainment
+  getAllStudentsAttainment: (courseId) => api.get(`/attainment/course/${courseId}/student-attainment`),
+  getStudentAttainment: (courseId, studentId) => api.get(`/attainment/course/${courseId}/students/${studentId}/attainment`),
+  getMyAttainment: (courseId) => api.get(`/attainment/course/${courseId}/my-attainment`),
+};
+
+// ── CES APIs ──────────────────────────────────────────────────────────────────
+export const cesAPI = {
+  // Questions (teacher)
+  createQuestions: (courseId, questions) => api.post(`/ces/course/${courseId}/questions`, { questions }),
+  getQuestions: (courseId) => api.get(`/ces/course/${courseId}/questions`),
+  setActive: (courseId, is_active) => api.patch(`/ces/course/${courseId}/activate`, { is_active }),
+
+  // Student survey
+  submitResponses: (courseId, responses) => api.post(`/ces/course/${courseId}/respond`, { responses }),
+  checkSubmitted: (courseId) => api.get(`/ces/course/${courseId}/submitted`),
+
+  // Attainment
+  calculateCES: (courseId) => api.post(`/ces/course/${courseId}/calculate`),
+  getCESAttainment: (courseId) => api.get(`/ces/course/${courseId}/attainment`),
+  uploadManualCES: (courseId, results) => api.post(`/ces/course/${courseId}/manual-upload`, { results }),
+
+  // SEE question mapping
+  saveSEEMapping: (courseId, mappings) => api.post(`/ces/see-mapping/course/${courseId}`, { mappings }),
+  getSEEMapping: (courseId) => api.get(`/ces/see-mapping/course/${courseId}`),
+  saveSEEScores: (courseId, scores) => api.post(`/ces/see-scores/course/${courseId}`, { scores }),
+
+  // PSO
+  getPSOOutcomes: () => api.get('/ces/pso-outcomes'),
+  saveCOPSOMapping: (courseId, mappings) => api.post(`/ces/co-pso-mapping/course/${courseId}`, { mappings }),
+  getCOPSOMapping: (courseId) => api.get(`/ces/co-pso-mapping/course/${courseId}`),
+};
+
 export default api;

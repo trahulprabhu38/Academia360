@@ -22,12 +22,13 @@ const Field = ({ label, hint, children }) => (
 export default function CourseAttainmentConfig({ courseId }) {
   const [config, setConfig] = useState({
     course_type: 'STANDALONE_THEORY',
-    attainment_threshold: 65,
-    cie_weightage: 60,
-    see_weightage: 40,
+    attainment_threshold: 60,
+    cie_weightage: 70,
+    see_weightage: 20,
     direct_weightage: 90,
     ces_weightage: 10,
     target_attainment: 60,
+    see_attainment_override: '',   // empty = use computed; number = override for all COs
   });
   const [loading, setLoading] = useState(true);
   const [saving, setSaving] = useState(false);
@@ -40,7 +41,13 @@ export default function CourseAttainmentConfig({ courseId }) {
     try {
       const res = await attainmentV2API.getConfig(courseId);
       if (res.data.data) {
-        setConfig(prev => ({ ...prev, ...res.data.data }));
+        const d = res.data.data;
+        setConfig(prev => ({
+          ...prev,
+          ...d,
+          // Convert null override from DB back to empty string for the input
+          see_attainment_override: d.see_attainment_override ?? '',
+        }));
       }
     } catch {
       // use defaults
@@ -52,7 +59,12 @@ export default function CourseAttainmentConfig({ courseId }) {
   const handleSave = async () => {
     try {
       setSaving(true);
-      await attainmentV2API.updateConfig(courseId, config);
+      const payload = {
+        ...config,
+        // Empty string → null (clears the override)
+        see_attainment_override: config.see_attainment_override === '' ? null : config.see_attainment_override,
+      };
+      await attainmentV2API.updateConfig(courseId, payload);
       toast.success('Configuration saved');
     } catch (err) {
       toast.error(err.response?.data?.message || 'Save failed');
@@ -117,13 +129,13 @@ export default function CourseAttainmentConfig({ courseId }) {
             </Field>
           </div>
 
-          {/* Direct attainment weightages */}
+          {/* Flat weightages: CIE + SEE + CES must sum to 100 */}
           <div>
             <p className="text-sm font-medium text-neutral-700 dark:text-dark-text-primary mb-2">
-              Direct Attainment Weightages
-              <span className="ml-2 text-xs text-neutral-400">(CIE + SEE must = 100)</span>
+              CO Attainment Weightages
+              <span className="ml-2 text-xs text-neutral-400">(CIE + SEE + CES must = 100)</span>
             </p>
-            <div className="grid grid-cols-2 gap-4">
+            <div className="grid grid-cols-3 gap-4">
               <Field label="CIE Weightage (%)">
                 <input
                   type="number" min="0" max="100" step="5"
@@ -140,25 +152,7 @@ export default function CourseAttainmentConfig({ courseId }) {
                   className="w-full px-3 py-2 rounded-lg border border-neutral-200 dark:border-dark-border bg-white dark:bg-dark-bg-secondary text-neutral-900 dark:text-dark-text-primary text-sm focus:outline-none focus:ring-2 focus:ring-primary-400"
                 />
               </Field>
-            </div>
-          </div>
-
-          {/* Final attainment split */}
-          <div>
-            <p className="text-sm font-medium text-neutral-700 dark:text-dark-text-primary mb-2">
-              Final Attainment Split
-              <span className="ml-2 text-xs text-neutral-400">(Direct + CES must = 100)</span>
-            </p>
-            <div className="grid grid-cols-2 gap-4">
-              <Field label="Direct Attainment Weight (%)">
-                <input
-                  type="number" min="0" max="100" step="5"
-                  value={config.direct_weightage}
-                  onChange={e => set('direct_weightage', parseFloat(e.target.value))}
-                  className="w-full px-3 py-2 rounded-lg border border-neutral-200 dark:border-dark-border bg-white dark:bg-dark-bg-secondary text-neutral-900 dark:text-dark-text-primary text-sm focus:outline-none focus:ring-2 focus:ring-primary-400"
-                />
-              </Field>
-              <Field label="CES (Indirect) Weight (%)">
+              <Field label="CES (Indirect) (%)">
                 <input
                   type="number" min="0" max="100" step="5"
                   value={config.ces_weightage}
@@ -169,9 +163,39 @@ export default function CourseAttainmentConfig({ courseId }) {
             </div>
           </div>
 
+          {/* SEE Attainment Override */}
+          <Field
+            label="SEE Attainment Override (%)"
+            hint="Optional. When set, this value is used for all COs instead of computing from uploaded scores. Use this if you compute SEE attainment externally (e.g. from VTU grade-based formula). Leave blank to use the calculated value."
+          >
+            <div className="flex gap-2 items-center">
+              <input
+                type="number" min="0" max="100" step="0.01"
+                placeholder="e.g. 34.41 — leave blank to auto-compute"
+                value={config.see_attainment_override ?? ''}
+                onChange={e => set('see_attainment_override', e.target.value)}
+                className="flex-1 px-3 py-2 rounded-lg border border-neutral-200 dark:border-dark-border bg-white dark:bg-dark-bg-secondary text-neutral-900 dark:text-dark-text-primary text-sm focus:outline-none focus:ring-2 focus:ring-primary-400"
+              />
+              {config.see_attainment_override !== '' && config.see_attainment_override != null && (
+                <button
+                  type="button"
+                  onClick={() => set('see_attainment_override', '')}
+                  className="px-3 py-2 text-xs rounded-lg border border-red-200 dark:border-red-800 text-red-600 dark:text-red-400 hover:bg-red-50 dark:hover:bg-red-900/20 transition-colors"
+                >
+                  Clear
+                </button>
+              )}
+            </div>
+            {config.see_attainment_override !== '' && config.see_attainment_override != null && (
+              <p className="text-xs text-amber-600 dark:text-amber-400 mt-1">
+                Override active — all COs will use {parseFloat(config.see_attainment_override).toFixed(2)}% as SEE attainment.
+              </p>
+            )}
+          </Field>
+
           {/* Formula preview */}
           <div className="p-3 rounded-lg bg-neutral-50 dark:bg-dark-bg-tertiary text-xs text-neutral-600 dark:text-dark-text-secondary font-mono">
-            Final CO = {config.direct_weightage}% × ({config.cie_weightage}% × CIE + {config.see_weightage}% × SEE) + {config.ces_weightage}% × CES
+            Final CO = {config.cie_weightage}% × CIE + {config.see_weightage}% × SEE + {config.ces_weightage}% × CES
           </div>
 
           <Button onClick={handleSave} disabled={saving} className="w-full">

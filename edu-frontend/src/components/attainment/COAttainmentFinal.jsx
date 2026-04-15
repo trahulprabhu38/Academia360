@@ -157,13 +157,10 @@ export default function COAttainmentFinal({ courseId }) {
         <Info className="w-4 h-4 mt-0.5 shrink-0" />
         <div className="space-y-0.5">
           <p>
-            <strong>Direct = 0.6 × CIA + 0.4 × SEE</strong>
-            &nbsp;&nbsp;|&nbsp;&nbsp;
             {hasCES
-              ? <><strong>Final = 0.9 × Direct + 0.1 × CES</strong> (indirect included)</>
-              : <strong>Final = Direct</strong>
+              ? <><strong>Final = 0.7 × CIA + 0.2 × SEE + 0.1 × CES</strong> (indirect included)</>
+              : <><strong>Final = 0.7 × CIA + 0.2 × SEE</strong> (no CES data, normalized to 100%)</>
             }
-            {' '} (no CES data)
           </p>
           <p className="text-xs opacity-80">
             Threshold: 65% per question &nbsp;|&nbsp; Level 3 ≥ 80%, Level 2 ≥ 60%, Level 1 &lt; 60%

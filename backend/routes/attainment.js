@@ -827,7 +827,8 @@ router.put('/course/:courseId/config', authenticateToken, async (req, res) => {
       see_weightage,
       direct_weightage,
       ces_weightage,
-      target_attainment
+      target_attainment,
+      see_attainment_override   // null/undefined = clear override; number = set override
     } = req.body;
 
     // Update course type
@@ -835,23 +836,31 @@ router.put('/course/:courseId/config', authenticateToken, async (req, res) => {
       await pool.query('UPDATE courses SET course_type = $1 WHERE id = $2', [course_type, courseId]);
     }
 
+    // see_attainment_override: explicit null means "clear it", undefined means "leave unchanged"
+    const seeOverride = 'see_attainment_override' in req.body
+      ? (see_attainment_override === '' || see_attainment_override == null ? null : parseFloat(see_attainment_override))
+      : undefined;
+
     // Upsert attainment config
     await pool.query(`
       INSERT INTO course_attainment_config
         (course_id, attainment_threshold, cie_weightage, see_weightage,
-         direct_weightage, ces_weightage, target_attainment)
-      VALUES ($1, $2, $3, $4, $5, $6, $7)
+         direct_weightage, ces_weightage, target_attainment, see_attainment_override)
+      VALUES ($1, $2, $3, $4, $5, $6, $7, $8)
       ON CONFLICT (course_id) DO UPDATE SET
-        attainment_threshold = COALESCE($2, course_attainment_config.attainment_threshold),
-        cie_weightage        = COALESCE($3, course_attainment_config.cie_weightage),
-        see_weightage        = COALESCE($4, course_attainment_config.see_weightage),
-        direct_weightage     = COALESCE($5, course_attainment_config.direct_weightage),
-        ces_weightage        = COALESCE($6, course_attainment_config.ces_weightage),
-        target_attainment    = COALESCE($7, course_attainment_config.target_attainment),
-        updated_at           = CURRENT_TIMESTAMP
+        attainment_threshold    = COALESCE($2, course_attainment_config.attainment_threshold),
+        cie_weightage           = COALESCE($3, course_attainment_config.cie_weightage),
+        see_weightage           = COALESCE($4, course_attainment_config.see_weightage),
+        direct_weightage        = COALESCE($5, course_attainment_config.direct_weightage),
+        ces_weightage           = COALESCE($6, course_attainment_config.ces_weightage),
+        target_attainment       = COALESCE($7, course_attainment_config.target_attainment),
+        see_attainment_override = CASE WHEN $9 THEN $8 ELSE course_attainment_config.see_attainment_override END,
+        updated_at              = CURRENT_TIMESTAMP
     `, [courseId,
         attainment_threshold || null, cie_weightage || null, see_weightage || null,
-        direct_weightage || null, ces_weightage || null, target_attainment || null]);
+        direct_weightage || null, ces_weightage || null, target_attainment || null,
+        seeOverride ?? null,                          // $8 = the value
+        'see_attainment_override' in req.body]);
 
     res.json({ success: true, message: 'Configuration updated' });
   } catch (err) {

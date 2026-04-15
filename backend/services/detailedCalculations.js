@@ -562,10 +562,10 @@ class DetailedCalculationsService {
       const verticalAvg = attemptsCount > 0 ? verticalSum / attemptsCount : 0;
 
       // CO attainment calculation per NBA document formula:
-      // threshold = max_marks * 0.65 (65% of max marks)
+      // threshold = max_marks * 0.60 (60% of max marks — "Marks to reach Performance")
       // B = SUM of marks of students who scored >= threshold
       // CO_attainment = ((B / A) / max_marks) * 100
-      const thresholdPct = 65.0;
+      const thresholdPct = 60.0;
       const thresholdMarks = maxMarks * (thresholdPct / 100);
       const qualifyingMarks = validMarks.filter(mark => mark >= thresholdMarks);
       const studentsAboveThreshold = qualifyingMarks.length;
