@@ -52,6 +52,10 @@ class DatabaseClient:
                 result = cur.fetchone()
                 return dict(result) if result else None
     
+    def _derive_marksheet_category(self, assessment_name: str) -> str:
+        """Derive marksheet category from assessment name."""
+        return 'LAB' if 'lab' in assessment_name.lower() else 'THEORY'
+
     def create_marksheet_record(
         self,
         course_id: str,
@@ -64,19 +68,20 @@ class DatabaseClient:
     ) -> str:
         """Create new marksheet record and return its ID"""
         import json
+        category = self._derive_marksheet_category(assessment_name)
         with self.get_connection() as conn:
             with conn.cursor(cursor_factory=RealDictCursor) as cur:
                 cur.execute("""
                     INSERT INTO marksheets (
                         course_id, assessment_name, file_name, file_hash,
-                        table_name, columns, row_count,
+                        table_name, columns, row_count, marksheet_category,
                         processing_status, created_at
                     ) VALUES (
-                        %s, %s, %s, %s, %s, %s, %s, 'processing', NOW()
+                        %s, %s, %s, %s, %s, %s, %s, %s, 'processing', NOW()
                     ) RETURNING id
                 """, (
                     course_id, assessment_name, file_name, file_hash,
-                    table_name, json.dumps(columns), row_count
+                    table_name, json.dumps(columns), row_count, category
                 ))
                 result = cur.fetchone()
                 return result['id']

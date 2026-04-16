@@ -8,8 +8,11 @@ import pool from '../config/db.js';
  *   CIE_CO = SUM(Theory_CO_att, Lab_CO_att, Quiz1_CO_att, Quiz2_CO_att)
  *            / COUNT_NON_ZERO(same)
  *
- * Where each "group attainment" (Theory, Lab, Quiz1, Quiz2) is itself the
- * average of per-question attainments within that marksheet category.
+ * Where each "group attainment" (Theory, Lab) is the FLAT AVERAGE of all
+ * per-question co_attainment_percent values within that category:
+ *   Theory CIA = avg(q1_att, q2_att, ..., AAT_att, Quiz_att)  ← all questions equal weight
+ *   Lab CIA    = avg(lab_q1_att, lab_q2_att, ...)
+ * This matches the spreadsheet's SUMIF/COUNTIFS formula on the Theory sheet row 89.
  *
  * Assessment categories (marksheet_category column):
  *   THEORY  → CIE tests + AAT + QUIZ uploaded under the theory marksheet
@@ -39,11 +42,20 @@ class CombinedCOAttainmentService {
     for (const co of cosQuery.rows) {
       const { id: coId, co_number: coNumber } = co;
 
-      // Step 1: for each marksheet_category, compute average CO attainment
-      // (avg of all question attainments for this CO within that category)
+      // Step 1: Compute per-category CO attainment using the spreadsheet formula exactly.
+      //
+      // The spreadsheet (Theory sheet row 89) stores per-COLUMN attainments.
+      // Theory CIA = SUMIF(co_row,"=*CO*", att_row) / COUNTIFS(...,"<>0")
+      //            = FLAT AVERAGE of all per-question attainments for that CO
+      //              across ALL theory marksheets (CIE1, CIE2, CIE3, AAT, Quiz).
+      //
+      // CIE = avg(Theory_CIA, Lab_CIA) — non-zero groups only.
+      //
+      // This is a FLAT average within each category — NOT a two-level per-marksheet average.
+      // Every question/column contributes equally regardless of which CIE test it belongs to.
       const groupRows = await pool.query(`
         SELECT
-          m.marksheet_category,
+          CASE WHEN LOWER(m.assessment_name) LIKE '%lab%' THEN 'LAB' ELSE 'THEORY' END AS marksheet_category,
           AVG(qva.co_attainment_percent) AS group_att,
           COUNT(*)                        AS q_count
         FROM question_vertical_analysis qva
@@ -52,7 +64,7 @@ class CombinedCOAttainmentService {
           AND qva.co_number  = $2
           AND m.course_id    = $1
           AND qva.attempts_count > 0
-        GROUP BY m.marksheet_category
+        GROUP BY CASE WHEN LOWER(m.assessment_name) LIKE '%lab%' THEN 'LAB' ELSE 'THEORY' END
       `, [courseId, coNumber]);
 
       if (groupRows.rows.length === 0) {

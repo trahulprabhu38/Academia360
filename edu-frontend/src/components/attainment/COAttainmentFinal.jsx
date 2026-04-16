@@ -163,7 +163,7 @@ export default function COAttainmentFinal({ courseId }) {
             }
           </p>
           <p className="text-xs opacity-80">
-            Threshold: 65% per question &nbsp;|&nbsp; Level 3 ≥ 80%, Level 2 ≥ 60%, Level 1 &lt; 60%
+            Threshold: 60% per question &nbsp;|&nbsp; Level 3 ≥ 80%, Level 2 ≥ 60%, Level 1 &lt; 60%
           </p>
         </div>
       </div>

@@ -206,6 +206,20 @@ class StudentAttainmentService {
     // 5. CES map (same for all students, keyed by co_number)
     const cesMap = await cesService.getAttainmentMap(courseId);
 
+    // 5b. SEE marks — per student, same value across all COs
+    const seeMarksRes = await pool.query(`
+      SELECT sm.student_id, sm.see_marks_obtained, sm.see_max_marks, u.usn
+      FROM see_marks sm
+      JOIN users u ON sm.student_id = u.id
+      WHERE sm.course_id = $1
+    `, [courseId]);
+    const seePctByUsn = {};
+    for (const row of seeMarksRes.rows) {
+      const maxM = parseFloat(row.see_max_marks) || 100;
+      seePctByUsn[row.usn.toUpperCase()] =
+        (parseFloat(row.see_marks_obtained) / maxM) * 100;
+    }
+
     // 6. Collect all USNs that appear in marks data
     const allUsns = new Set([
       ...Object.keys(theoryAcc),
@@ -242,13 +256,14 @@ class StudentAttainmentService {
           cie = theoryCIA;
         }
 
-        const see = 0; // SEE per-student TODO (requires see_question_scores per student)
+        const see = seePctByUsn[usn] ?? 0;
 
         const cesInfo = cesMap[co.co_number] || { ces_pct: 0, has_data: false };
         const direct  = cieW * cie + seeW * see;
+        // Normalize to 100% scale when no CES (same formula as finalCOAttainmentService)
         const final   = cesInfo.has_data
-          ? directW * direct + cesW * cesInfo.ces_pct
-          : direct;
+          ? direct + cesW * cesInfo.ces_pct
+          : (cieW + seeW) > 0 ? direct / (cieW + seeW) : 0;
 
         const level = this._classifyLevel(final, target);
 

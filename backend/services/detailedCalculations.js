@@ -612,18 +612,6 @@ class DetailedCalculationsService {
              vertical_sum, vertical_avg, threshold_60pct, students_above_threshold,
              sum_marks_above_threshold, threshold_pct, co_attainment_percent)
             VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12, $13)
-          ON CONFLICT (marksheet_id, question_column) DO UPDATE SET
-              co_number = EXCLUDED.co_number,
-              max_marks = EXCLUDED.max_marks,
-            attempts_count = EXCLUDED.attempts_count,
-            vertical_sum = EXCLUDED.vertical_sum,
-            vertical_avg = EXCLUDED.vertical_avg,
-              threshold_60pct = EXCLUDED.threshold_60pct,
-            students_above_threshold = EXCLUDED.students_above_threshold,
-            sum_marks_above_threshold = EXCLUDED.sum_marks_above_threshold,
-            threshold_pct = EXCLUDED.threshold_pct,
-            co_attainment_percent = EXCLUDED.co_attainment_percent,
-            calculated_at = CURRENT_TIMESTAMP
         `, [
           result.courseId,
           result.marksheetId,

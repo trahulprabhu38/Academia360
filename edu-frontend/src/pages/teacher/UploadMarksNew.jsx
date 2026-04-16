@@ -1,10 +1,11 @@
 import React, { useState, useRef, useEffect, useCallback } from "react";
 import { motion, AnimatePresence } from "framer-motion";
 import axios from "axios";
+import * as XLSX from "xlsx";
 import {
   CloudUpload, GraduationCap, FlaskConical,
   BookOpen, CheckCircle, Circle, ChevronDown, ChevronUp,
-  FileUp, X, RefreshCw,
+  FileUp, X, RefreshCw, Download, FileText,
 } from "lucide-react";
 import toast from "react-hot-toast";
 import UploadZone from "../../components/upload/UploadZone";
@@ -13,6 +14,8 @@ import DatasetTable from "../../components/upload/DatasetTable";
 import { courseAPI, marksheetAPI } from "../../services/api";
 import { Button } from "../../components/ui/button";
 import { Card, CardContent } from "../../components/ui/card";
+
+const API_BASE = import.meta.env.VITE_API_URL || "http://localhost:8080/api";
 
 const UPLOAD_SERVICE_URL = import.meta.env.VITE_UPLOAD_SERVICE_URL || "http://localhost:8001";
 
@@ -169,6 +172,181 @@ function UploadSlot({ slot, courseId, uploadedNames, onUploaded }) {
   );
 }
 
+// ── SEE Upload Slot ───────────────────────────────────────────────────────────
+function SEEUploadSlot({ courseId, hasSEEUploaded, onUploaded }) {
+  const [expanded, setExpanded] = useState(false);
+  const [file, setFile] = useState(null);
+  const [uploading, setUploading] = useState(false);
+  const [result, setResult] = useState(null);
+  const fileRef = useRef(null);
+
+  const downloadTemplate = () => {
+    const template = [
+      { USN: "1MS22CS001", SEE_Marks: 75 },
+      { USN: "1MS22CS002", SEE_Marks: 82 },
+      { USN: "1MS22CS003", SEE_Marks: 68 },
+    ];
+    const ws = XLSX.utils.json_to_sheet(template);
+    ws["!cols"] = [{ wch: 15 }, { wch: 12 }];
+    const wb = XLSX.utils.book_new();
+    XLSX.utils.book_append_sheet(wb, ws, "SEE Marks Template");
+    XLSX.writeFile(wb, "SEE_Marks_Template.xlsx");
+  };
+
+  const handleFileChange = (e) => {
+    const f = e.target.files[0];
+    if (f) setFile(f);
+    e.target.value = "";
+  };
+
+  const handleUpload = async () => {
+    if (!file) { toast.error("Please select a file"); return; }
+    setUploading(true);
+    try {
+      // Parse the Excel / CSV file
+      const buffer = await file.arrayBuffer();
+      const wb = XLSX.read(buffer, { type: "array" });
+      const ws = wb.Sheets[wb.SheetNames[0]];
+      const rows = XLSX.utils.sheet_to_json(ws);
+
+      const marksData = rows
+        .map((r) => ({
+          usn: (r.USN || r.usn || "").toString().trim(),
+          see_marks: parseFloat(r.SEE_Marks ?? r.see_marks ?? r.Marks ?? r.marks ?? NaN),
+        }))
+        .filter((r) => r.usn && !isNaN(r.see_marks));
+
+      if (marksData.length === 0) {
+        toast.error("No valid rows found. Ensure columns USN and SEE_Marks exist.");
+        return;
+      }
+
+      const token = localStorage.getItem("token");
+      const resp = await axios.post(
+        `${API_BASE}/see-marks/courses/${courseId}/upload`,
+        { marksData },
+        { headers: { Authorization: `Bearer ${token}` } }
+      );
+
+      const data = resp.data.data || resp.data;
+      setResult(data);
+      toast.success(`SEE: ${data.uploaded ?? 0} uploaded, ${data.updated ?? 0} updated`);
+      onUploaded?.();
+    } catch (err) {
+      toast.error(err.response?.data?.message || err.message || "SEE upload failed");
+    } finally {
+      setUploading(false);
+    }
+  };
+
+  const isUploaded = result !== null || hasSEEUploaded;
+  const cRed = {
+    bg: "bg-red-50 dark:bg-red-950/30",
+    border: "border-red-300 dark:border-red-700",
+    text: "text-red-700 dark:text-red-300",
+    badge: "bg-red-100 dark:bg-red-900/40 text-red-700 dark:text-red-300",
+  };
+
+  return (
+    <div className={`rounded-2xl border-2 overflow-hidden transition-all duration-200 ${isUploaded ? "border-green-400 dark:border-green-600" : "border-neutral-200 dark:border-dark-border"}`}>
+      <button
+        className="w-full flex items-center justify-between p-4 hover:bg-neutral-50 dark:hover:bg-dark-bg-secondary transition-colors"
+        onClick={() => setExpanded((p) => !p)}
+      >
+        <div className="flex items-center gap-3">
+          {isUploaded
+            ? <CheckCircle className="w-5 h-5 text-green-500 shrink-0" />
+            : <Circle className="w-5 h-5 text-neutral-300 dark:text-neutral-600 shrink-0" />}
+          <div className="text-left">
+            <p className={`font-semibold ${isUploaded ? "text-green-700 dark:text-green-400" : "text-neutral-800 dark:text-dark-text-primary"}`}>
+              SEE Marks
+            </p>
+            <p className="text-xs text-neutral-500 dark:text-dark-text-muted">
+              Semester End Examination total marks (out of 100)
+            </p>
+          </div>
+        </div>
+        <div className="flex items-center gap-2">
+          {isUploaded && (
+            <span className={`text-xs font-medium px-2 py-0.5 rounded-full ${cRed.badge}`}>Uploaded</span>
+          )}
+          {expanded ? <ChevronUp className="w-4 h-4 text-neutral-400" /> : <ChevronDown className="w-4 h-4 text-neutral-400" />}
+        </div>
+      </button>
+
+      <AnimatePresence>
+        {expanded && (
+          <motion.div
+            initial={{ height: 0, opacity: 0 }}
+            animate={{ height: "auto", opacity: 1 }}
+            exit={{ height: 0, opacity: 0 }}
+            transition={{ duration: 0.2 }}
+            className="overflow-hidden"
+          >
+            <div className={`p-4 border-t ${cRed.border} ${cRed.bg} space-y-3`}>
+              {/* Info */}
+              <p className="text-xs text-red-700 dark:text-red-300">
+                Upload an Excel/CSV with columns <strong>USN</strong> and <strong>SEE_Marks</strong> (0–100).
+                Marks are stored in the SEE attainment pipeline immediately.
+              </p>
+
+              {/* Template + file actions */}
+              <div className="flex gap-2 flex-wrap">
+                <Button variant="outline" size="sm" onClick={downloadTemplate}>
+                  <Download className="w-4 h-4 mr-1" /> Download Template
+                </Button>
+                <Button
+                  size="sm"
+                  variant="outline"
+                  onClick={() => fileRef.current?.click()}
+                  disabled={uploading}
+                  className={`${cRed.text} border-red-300`}
+                >
+                  <FileText className="w-4 h-4 mr-1" />
+                  {file ? file.name : "Choose File"}
+                </Button>
+                <input
+                  ref={fileRef}
+                  type="file"
+                  accept=".xlsx,.xls,.csv"
+                  className="hidden"
+                  onChange={handleFileChange}
+                />
+                {file && !result && (
+                  <>
+                    <Button size="sm" onClick={handleUpload} disabled={uploading}>
+                      {uploading
+                        ? <><div className="w-4 h-4 border-2 border-white border-t-transparent rounded-full animate-spin mr-2" />Uploading…</>
+                        : <><CloudUpload className="w-4 h-4 mr-2" />Upload SEE</>}
+                    </Button>
+                    <Button variant="outline" size="sm" onClick={() => setFile(null)}>
+                      <X className="w-4 h-4" />
+                    </Button>
+                  </>
+                )}
+              </div>
+
+              {/* Result */}
+              {result && (
+                <div className="rounded-lg bg-green-50 dark:bg-green-900/20 border border-green-200 dark:border-green-800 p-3 text-sm text-green-800 dark:text-green-300">
+                  <CheckCircle className="w-4 h-4 inline mr-1" />
+                  <strong>Upload complete:</strong> {result.uploaded ?? 0} uploaded,{" "}
+                  {result.updated ?? 0} updated, {result.failed ?? 0} failed.
+                  {result.failed > 0 && (
+                    <p className="mt-1 text-xs text-red-600">
+                      {result.errors?.slice(0, 3).map((e) => `${e.usn}: ${e.error}`).join(" | ")}
+                    </p>
+                  )}
+                </div>
+              )}
+            </div>
+          </motion.div>
+        )}
+      </AnimatePresence>
+    </div>
+  );
+}
+
 // ── Main hub ──────────────────────────────────────────────────────────────────
 const UploadMarksNew = () => {
   const [courses, setCourses] = useState([]);
@@ -177,6 +355,7 @@ const UploadMarksNew = () => {
   const [loadingCourses, setLoadingCourses] = useState(true);
   const [uploadedNames, setUploadedNames] = useState([]);
   const [refreshing, setRefreshing] = useState(false);
+  const [hasSEEUploaded, setHasSEEUploaded] = useState(false);
 
   useEffect(() => { loadCourses(); }, []);
 
@@ -199,11 +378,19 @@ const UploadMarksNew = () => {
       const sheets = res.data.data || [];
       setUploadedNames(sheets.map(s => (s.assessment_name || "").toLowerCase()));
     } catch {/* ignore */}
+    try {
+      const token = localStorage.getItem("token");
+      const seeRes = await axios.get(`${API_BASE}/see-marks/courses/${courseId}/status`, {
+        headers: { Authorization: `Bearer ${token}` },
+      });
+      setHasSEEUploaded((seeRes.data.data?.totalUploaded ?? 0) > 0);
+    } catch {/* ignore */}
   }, []);
 
   const handleCourseChange = async (courseId) => {
     setSelectedCourse(courseId);
     setUploadedNames([]);
+    setHasSEEUploaded(false);
     if (!courseId) { setSelectedCourseObj(null); return; }
 
     // Always re-fetch the course from server for up-to-date course_type
@@ -364,6 +551,22 @@ const UploadMarksNew = () => {
                   </div>
                 </motion.div>
               ))}
+
+              {/* SEE Section — always shown regardless of course type */}
+              <motion.div initial={{ opacity: 0, y: 16 }} animate={{ opacity: 1, y: 0 }} transition={{ delay: (sections.length) * 0.07 }}>
+                <div className="flex items-center gap-2 mb-3">
+                  <FileText className="w-4 h-4 text-neutral-500 dark:text-dark-text-muted" />
+                  <h3 className="text-sm font-bold text-neutral-500 dark:text-dark-text-muted uppercase tracking-wider">
+                    Semester End Exam (SEE)
+                  </h3>
+                  <div className="flex-1 h-px bg-neutral-200 dark:bg-dark-border" />
+                </div>
+                <SEEUploadSlot
+                  courseId={selectedCourse}
+                  hasSEEUploaded={hasSEEUploaded}
+                  onUploaded={() => setHasSEEUploaded(true)}
+                />
+              </motion.div>
             </motion.div>
           )}
         </AnimatePresence>
