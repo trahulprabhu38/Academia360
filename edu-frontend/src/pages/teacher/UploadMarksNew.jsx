@@ -2,76 +2,181 @@ import React, { useState, useRef, useEffect, useCallback } from "react";
 import { motion, AnimatePresence } from "framer-motion";
 import axios from "axios";
 import * as XLSX from "xlsx";
+import { useDropzone } from "react-dropzone";
 import {
   CloudUpload, GraduationCap, FlaskConical,
-  BookOpen, CheckCircle, Circle, ChevronDown, ChevronUp,
-  FileUp, X, RefreshCw, Download, FileText,
+  BookOpen, CheckCircle, Circle, RefreshCw,
+  Download, FileText, Users, Hash, BarChart2,
+  FileSpreadsheet, X, AlertCircle, Loader2,
 } from "lucide-react";
 import toast from "react-hot-toast";
-import UploadZone from "../../components/upload/UploadZone";
-import UploadSummary from "../../components/upload/UploadSummary";
-import DatasetTable from "../../components/upload/DatasetTable";
 import { courseAPI, marksheetAPI } from "../../services/api";
 import { Button } from "../../components/ui/button";
 import { Card, CardContent } from "../../components/ui/card";
 
 const API_BASE = import.meta.env.VITE_API_URL || "http://localhost:8080/api";
-
 const UPLOAD_SERVICE_URL = import.meta.env.VITE_UPLOAD_SERVICE_URL || "http://localhost:8001";
 
 // ── Slot definitions ──────────────────────────────────────────────────────────
 const THEORY_SLOTS = [
-  { id: "cia1",    label: "CIA 1",      hint: "Continuous Internal Assessment 1", color: "blue",   defaultName: "CIA 1"    },
-  { id: "cia2",    label: "CIA 2",      hint: "Continuous Internal Assessment 2", color: "blue",   defaultName: "CIA 2"    },
-  { id: "cia3",    label: "CIA 3",      hint: "Continuous Internal Assessment 3", color: "blue",   defaultName: "CIA 3"    },
-  { id: "aat",     label: "AAT / Quiz", hint: "Additional Assessment Task",        color: "purple", defaultName: "AAT Quiz" },
+  { id: "cia1",  label: "CIA 1",      hint: "Continuous Internal Assessment 1", color: "blue",   defaultName: "CIA 1"    },
+  { id: "cia2",  label: "CIA 2",      hint: "Continuous Internal Assessment 2", color: "blue",   defaultName: "CIA 2"    },
+  { id: "cia3",  label: "CIA 3",      hint: "Continuous Internal Assessment 3", color: "blue",   defaultName: "CIA 3"    },
+  { id: "aat",   label: "AAT / Quiz", hint: "Additional Assessment Task",        color: "purple", defaultName: "AAT Quiz" },
 ];
 const LAB_SLOTS = [
-  { id: "labcia1", label: "Lab CIA 1",  hint: "Lab Continuous Internal Exam 1",    color: "green",  defaultName: "Lab CIA 1" },
-  { id: "labcia2", label: "Lab CIA 2",  hint: "Lab Continuous Internal Exam 2",    color: "green",  defaultName: "Lab CIA 2" },
-  { id: "labia",   label: "Lab IA",     hint: "Lab Internal Assessment (Test)",     color: "green",  defaultName: "Lab IA"    },
+  { id: "labcia1", label: "Lab CIA 1", hint: "Lab Continuous Internal Exam 1",  color: "green",  defaultName: "Lab CIA 1" },
+  { id: "labcia2", label: "Lab CIA 2", hint: "Lab Continuous Internal Exam 2",  color: "green",  defaultName: "Lab CIA 2" },
+  { id: "labia",   label: "Lab IA",   hint: "Lab Internal Assessment (Test)",   color: "green",  defaultName: "Lab IA"    },
 ];
+const ALL_SLOTS = [...THEORY_SLOTS, ...LAB_SLOTS];
 
 function getSections(courseType) {
   if (courseType === "IPCC") return [
-    { title: "Theory Components",       icon: BookOpen,    slots: THEORY_SLOTS },
-    { title: "Lab Components (IPCC)",   icon: FlaskConical, slots: LAB_SLOTS   },
+    { title: "Theory Components",     icon: BookOpen,     slots: THEORY_SLOTS },
+    { title: "Lab Components (IPCC)", icon: FlaskConical, slots: LAB_SLOTS   },
   ];
   if (courseType === "STANDALONE_LAB") return [
-    { title: "Lab Components",          icon: FlaskConical, slots: LAB_SLOTS   },
+    { title: "Lab Components",        icon: FlaskConical, slots: LAB_SLOTS   },
   ];
   return [
-    { title: "Theory Components",       icon: BookOpen,    slots: THEORY_SLOTS },
+    { title: "Theory Components",     icon: BookOpen,     slots: THEORY_SLOTS },
   ];
 }
 
-const COLOR_MAP = {
-  blue:   { bg: "bg-blue-50 dark:bg-blue-950/30",   border: "border-blue-300 dark:border-blue-700",   text: "text-blue-700 dark:text-blue-300",   badge: "bg-blue-100 dark:bg-blue-900/40 text-blue-700 dark:text-blue-300"   },
-  green:  { bg: "bg-green-50 dark:bg-green-950/30", border: "border-green-300 dark:border-green-700", text: "text-green-700 dark:text-green-300", badge: "bg-green-100 dark:bg-green-900/40 text-green-700 dark:text-green-300" },
-  purple: { bg: "bg-purple-50 dark:bg-purple-950/30", border: "border-purple-300 dark:border-purple-700", text: "text-purple-700 dark:text-purple-300", badge: "bg-purple-100 dark:bg-purple-900/40 text-purple-700 dark:text-purple-300" },
-};
+// ── Slot detection: exact normalized match ────────────────────────────────────
+// Normalize: lowercase, strip spaces/dashes, treat cia≡cie
+const norm = (s) =>
+  s.toLowerCase().replace(/[\s_\-]+/g, "").replace(/\bcie\b/g, "cia");
 
-// ── Single upload slot ────────────────────────────────────────────────────────
-function UploadSlot({ slot, courseId, uploadedNames, onUploaded }) {
-  const [expanded, setExpanded] = useState(false);
-  const [file, setFile] = useState(null);
-  const [assessmentName, setAssessmentName] = useState(slot.defaultName);
-  const [uploading, setUploading] = useState(false);
-  const [result, setResult] = useState(null);
-  const tableRef = useRef(null);
+function buildUploadedSlotIds(assessmentNames) {
+  const ids = new Set();
+  for (const name of assessmentNames) {
+    const nNorm = norm(name);
+    for (const slot of ALL_SLOTS) {
+      if (nNorm === norm(slot.defaultName)) {
+        ids.add(slot.id);
+        break;
+      }
+    }
+  }
+  return ids;
+}
 
-  // Check if this slot already has data uploaded
-  const isUploaded = result !== null || uploadedNames.some(n => {
-    const slotKey = slot.id.replace(/\d+$/, "").toLowerCase();   // e.g. "labcia" from "labcia1"
-    const labelKey = slot.label.toLowerCase().replace(/\s+/g, ""); // e.g. "labcia1"
-    return n.includes(slotKey) || n.includes(labelKey) || n.includes(slot.defaultName.toLowerCase().replace(/\s+/g,""));
+// ── CIE template download ─────────────────────────────────────────────────────
+function downloadCIETemplate() {
+  const header = [
+    "USN", "STUDENT NAME",
+    "Q1A","Q1B","Q2A","Q2B","Q3A","Q3B",
+    "Q4A","Q4B","Q5A","Q5B","Q6A","Q6B","Q7A","Q7B","Q8A","Q8B",
+  ];
+  const samples = [
+    ["1DS23AI001","STUDENT ONE", 6,4, 5,5, 7,3, "","", "","", 6,4, "","", "",""],
+    ["1DS23AI002","STUDENT TWO", 4,3, 8,2, "","", 5,5, "","", "","", 7,3, "",""],
+  ];
+  const ws = XLSX.utils.aoa_to_sheet([header, ...samples]);
+  ws["!cols"] = header.map((_, i) => ({ wch: i < 2 ? 18 : 6 }));
+  const wb = XLSX.utils.book_new();
+  XLSX.utils.book_append_sheet(wb, ws, "CIE Marks Template");
+  XLSX.writeFile(wb, "CIE_Marks_Template.xlsx");
+}
+
+// ── Compact drop zone ─────────────────────────────────────────────────────────
+function DropZone({ onFile, file, uploading }) {
+  const onDrop = useCallback(
+    (accepted) => { if (accepted[0]) onFile(accepted[0]); },
+    [onFile]
+  );
+  const { getRootProps, getInputProps, isDragActive } = useDropzone({
+    onDrop,
+    accept: {
+      "application/vnd.openxmlformats-officedocument.spreadsheetml.sheet": [".xlsx"],
+      "application/vnd.ms-excel": [".xls"],
+      "text/csv": [".csv"],
+    },
+    multiple: false,
+    disabled: uploading,
   });
 
-  const c = COLOR_MAP[slot.color] || COLOR_MAP.blue;
+  return (
+    <div
+      {...getRootProps()}
+      className={`relative flex flex-col items-center justify-center gap-2 rounded-xl border-2 border-dashed px-4 py-5 text-center cursor-pointer transition-all duration-200
+        ${uploading ? "opacity-50 cursor-not-allowed" : ""}
+        ${isDragActive
+          ? "border-primary-500 bg-primary-50 dark:border-dark-green-500 dark:bg-dark-green-500/10"
+          : file
+          ? "border-green-400 bg-green-50 dark:border-green-600 dark:bg-green-900/10"
+          : "border-neutral-300 dark:border-dark-border hover:border-primary-400 dark:hover:border-dark-green-500 hover:bg-neutral-50 dark:hover:bg-dark-bg-tertiary/30"
+        }`}
+    >
+      <input {...getInputProps()} />
+      {file ? (
+        <>
+          <FileSpreadsheet className="w-7 h-7 text-green-500" />
+          <p className="text-sm font-medium text-green-700 dark:text-green-400 truncate max-w-full px-2">{file.name}</p>
+          <p className="text-xs text-neutral-400">{(file.size / 1024).toFixed(1)} KB — click to change</p>
+        </>
+      ) : (
+        <>
+          <CloudUpload className={`w-7 h-7 ${isDragActive ? "text-primary-500" : "text-neutral-400"}`} />
+          <p className="text-sm font-medium text-neutral-600 dark:text-neutral-300">
+            {isDragActive ? "Drop file here" : "Drop file or click to browse"}
+          </p>
+          <div className="flex gap-1.5">
+            {[".CSV", ".XLSX", ".XLS"].map(ext => (
+              <span key={ext} className="text-[10px] font-bold px-1.5 py-0.5 rounded bg-neutral-100 dark:bg-dark-bg-tertiary text-neutral-500 dark:text-neutral-400">{ext}</span>
+            ))}
+          </div>
+        </>
+      )}
+    </div>
+  );
+}
+
+// ── Stat chip ─────────────────────────────────────────────────────────────────
+function StatChip({ icon: Icon, label, value, color = "green" }) {
+  const colors = {
+    green:  "bg-green-50  dark:bg-green-900/20  text-green-700  dark:text-green-400  border-green-200  dark:border-green-800",
+    blue:   "bg-blue-50   dark:bg-blue-900/20   text-blue-700   dark:text-blue-400   border-blue-200   dark:border-blue-800",
+    purple: "bg-purple-50 dark:bg-purple-900/20 text-purple-700 dark:text-purple-400 border-purple-200 dark:border-purple-800",
+    amber:  "bg-amber-50  dark:bg-amber-900/20  text-amber-700  dark:text-amber-400  border-amber-200  dark:border-amber-800",
+  };
+  return (
+    <div className={`flex items-center gap-2 rounded-xl border px-3 py-2.5 ${colors[color]}`}>
+      <Icon className="w-4 h-4 shrink-0" />
+      <div className="min-w-0">
+        <p className="text-[11px] font-medium opacity-70 leading-none mb-0.5">{label}</p>
+        <p className="text-sm font-bold leading-none truncate">{value ?? "—"}</p>
+      </div>
+    </div>
+  );
+}
+
+// ── Upload slot card ──────────────────────────────────────────────────────────
+function UploadSlot({ slot, courseId, uploadedSlotIds, onUploaded }) {
+  const [file, setFile]                 = useState(null);
+  const [assessmentName, setName]       = useState(slot.defaultName);
+  const [uploading, setUploading]       = useState(false);
+  const [uploadResult, setUploadResult] = useState(null);
+
+  const isUploaded = uploadResult !== null || uploadedSlotIds.has(slot.id);
+
+  const colorRing = {
+    blue:   isUploaded ? "border-green-400 dark:border-green-600" : "border-blue-200 dark:border-blue-800",
+    green:  isUploaded ? "border-green-400 dark:border-green-600" : "border-green-200 dark:border-green-800",
+    purple: isUploaded ? "border-green-400 dark:border-green-600" : "border-purple-200 dark:border-purple-800",
+  }[slot.color] ?? "border-neutral-200 dark:border-dark-border";
+
+  const headerBg = {
+    blue:   "bg-blue-50   dark:bg-blue-950/40",
+    green:  "bg-green-50  dark:bg-green-950/40",
+    purple: "bg-purple-50 dark:bg-purple-950/40",
+  }[slot.color] ?? "bg-neutral-50 dark:bg-dark-bg-secondary";
 
   const handleUpload = async () => {
-    if (!file) { toast.error("Please select a file"); return; }
-    if (!assessmentName.trim()) { toast.error("Please enter an assessment name"); return; }
+    if (!file)                  { toast.error("Please select a file");             return; }
+    if (!assessmentName.trim()) { toast.error("Please enter an assessment name");  return; }
     try {
       setUploading(true);
       const fd = new FormData();
@@ -80,12 +185,14 @@ function UploadSlot({ slot, courseId, uploadedNames, onUploaded }) {
       fd.append("assessmentName", assessmentName.trim());
       const token = localStorage.getItem("token");
       const resp = await axios.post(`${UPLOAD_SERVICE_URL}/upload`, fd, {
-        headers: { "Content-Type": "multipart/form-data", ...(token ? { Authorization: `Bearer ${token}` } : {}) },
+        headers: {
+          "Content-Type": "multipart/form-data",
+          ...(token ? { Authorization: `Bearer ${token}` } : {}),
+        },
       });
-      setResult(resp.data);
+      setUploadResult(resp.data);
       toast.success(`${slot.label} uploaded successfully!`);
       onUploaded?.(assessmentName.trim());
-      setTimeout(() => tableRef.current?.scrollIntoView({ behavior: "smooth", block: "start" }), 600);
     } catch (err) {
       toast.error(err.response?.data?.detail || err.message || "Upload failed");
     } finally {
@@ -94,140 +201,199 @@ function UploadSlot({ slot, courseId, uploadedNames, onUploaded }) {
   };
 
   return (
-    <div className={`rounded-2xl border-2 overflow-hidden transition-all duration-200 ${isUploaded ? "border-green-400 dark:border-green-600" : "border-neutral-200 dark:border-dark-border"}`}>
-      <button
-        className="w-full flex items-center justify-between p-4 hover:bg-neutral-50 dark:hover:bg-dark-bg-secondary transition-colors"
-        onClick={() => setExpanded(p => !p)}
-      >
-        <div className="flex items-center gap-3">
-          {isUploaded
-            ? <CheckCircle className="w-5 h-5 text-green-500 shrink-0" />
-            : <Circle className="w-5 h-5 text-neutral-300 dark:text-neutral-600 shrink-0" />}
-          <div className="text-left">
-            <p className={`font-semibold ${isUploaded ? "text-green-700 dark:text-green-400" : "text-neutral-800 dark:text-dark-text-primary"}`}>
-              {slot.label}
-            </p>
-            <p className="text-xs text-neutral-500 dark:text-dark-text-muted">{slot.hint}</p>
-          </div>
+    <motion.div
+      layout
+      className={`rounded-2xl border-2 overflow-hidden transition-colors duration-300 bg-white dark:bg-dark-bg-secondary ${colorRing}`}
+    >
+      {/* Card header */}
+      <div className={`flex items-center gap-3 px-4 py-3 ${headerBg}`}>
+        {isUploaded
+          ? <CheckCircle className="w-5 h-5 text-green-500 shrink-0" />
+          : <Circle className="w-5 h-5 text-neutral-300 dark:text-neutral-600 shrink-0" />}
+        <div className="flex-1 min-w-0">
+          <p className={`font-semibold text-sm ${isUploaded ? "text-green-700 dark:text-green-400" : "text-neutral-800 dark:text-dark-text-primary"}`}>
+            {slot.label}
+          </p>
+          <p className="text-[11px] text-neutral-400 dark:text-neutral-500 truncate">{slot.hint}</p>
         </div>
-        <div className="flex items-center gap-2">
-          {isUploaded && (
-            <span className={`text-xs font-medium px-2 py-0.5 rounded-full ${c.badge}`}>Uploaded</span>
-          )}
-          {expanded ? <ChevronUp className="w-4 h-4 text-neutral-400" /> : <ChevronDown className="w-4 h-4 text-neutral-400" />}
-        </div>
-      </button>
+        {isUploaded && (
+          <span className="shrink-0 text-[10px] font-bold px-2 py-0.5 rounded-full bg-green-100 dark:bg-green-900/40 text-green-700 dark:text-green-300">
+            Uploaded
+          </span>
+        )}
+      </div>
 
-      <AnimatePresence>
-        {expanded && (
+      {/* Card body */}
+      <AnimatePresence mode="wait">
+        {isUploaded ? (
+          /* ── Success state ─────────────────────────────── */
           <motion.div
-            initial={{ height: 0, opacity: 0 }}
-            animate={{ height: "auto", opacity: 1 }}
-            exit={{ height: 0, opacity: 0 }}
-            transition={{ duration: 0.2 }}
-            className="overflow-hidden"
+            key="success"
+            initial={{ opacity: 0, y: 8 }}
+            animate={{ opacity: 1, y: 0 }}
+            exit={{ opacity: 0, y: -8 }}
+            transition={{ duration: 0.25 }}
+            className="p-4 space-y-3"
           >
-            <div className={`p-4 border-t ${c.border} ${c.bg}`}>
-              <div className="mb-3">
-                <label className="block text-sm font-semibold text-neutral-700 dark:text-dark-text-primary mb-1">
-                  Assessment Name *
-                </label>
-                <input
-                  type="text"
-                  value={assessmentName}
-                  onChange={e => setAssessmentName(e.target.value)}
-                  placeholder={`e.g., ${slot.defaultName}`}
-                  disabled={uploading}
-                  className="w-full px-3 py-2 bg-white dark:bg-dark-bg-secondary border-2 border-neutral-300 dark:border-dark-border rounded-xl text-sm text-neutral-800 dark:text-dark-text-primary focus:outline-none focus:border-primary-500 dark:focus:border-dark-green-500 disabled:opacity-50"
+            <div className="flex items-center gap-2 text-green-600 dark:text-green-400">
+              <CheckCircle className="w-4 h-4" />
+              <span className="text-sm font-medium">
+                {uploadResult
+                  ? `${uploadResult.file_name || file?.name || "File"} processed`
+                  : `${slot.label} data is loaded`}
+              </span>
+            </div>
+
+            {uploadResult && (
+              <div className="grid grid-cols-2 gap-2">
+                <StatChip
+                  icon={Users}
+                  label="Students enrolled"
+                  value={uploadResult.enrollment?.enrolled ?? uploadResult.row_count}
+                  color="green"
+                />
+                <StatChip
+                  icon={Hash}
+                  label="Scores processed"
+                  value={uploadResult.scores_processed ?? "—"}
+                  color="blue"
+                />
+                <StatChip
+                  icon={FileSpreadsheet}
+                  label="Rows in file"
+                  value={uploadResult.row_count ?? "—"}
+                  color="purple"
+                />
+                <StatChip
+                  icon={BarChart2}
+                  label="New accounts"
+                  value={uploadResult.enrollment?.created ?? "—"}
+                  color="amber"
                 />
               </div>
-              <UploadZone onFileSelect={setFile} selectedFile={file} uploading={uploading} />
-              {file && !result && (
-                <div className="mt-3 flex gap-2 justify-end">
-                  <Button variant="outline" size="sm" onClick={() => { setFile(null); }}>
-                    <X className="w-4 h-4 mr-1" /> Clear
-                  </Button>
-                  <Button size="sm" onClick={handleUpload} disabled={uploading}>
-                    {uploading
-                      ? <><div className="w-4 h-4 border-2 border-white border-t-transparent rounded-full animate-spin mr-2" />Uploading…</>
-                      : <><CloudUpload className="w-4 h-4 mr-2" />Upload {slot.label}</>}
-                  </Button>
-                </div>
+            )}
+
+            {/* Re-upload link */}
+            <button
+              className="text-xs text-neutral-400 dark:text-neutral-500 hover:text-neutral-600 dark:hover:text-neutral-300 underline underline-offset-2 transition-colors"
+              onClick={() => { setUploadResult(null); setFile(null); setName(slot.defaultName); }}
+            >
+              Replace / re-upload
+            </button>
+          </motion.div>
+        ) : (
+          /* ── Upload form ───────────────────────────────── */
+          <motion.div
+            key="form"
+            initial={{ opacity: 0, y: 8 }}
+            animate={{ opacity: 1, y: 0 }}
+            exit={{ opacity: 0, y: -8 }}
+            transition={{ duration: 0.25 }}
+            className="p-4 space-y-3"
+          >
+            {/* Format hint */}
+            <div className="rounded-lg bg-amber-50 dark:bg-amber-900/15 border border-amber-200 dark:border-amber-800/50 px-3 py-2 text-xs text-amber-800 dark:text-amber-300">
+              <span className="font-semibold">Format: </span>
+              Columns <strong>Q1A, Q1B … Q8A, Q8B</strong> (sub-questions) or <strong>Q1 … Q8</strong> (single).
+              Each main question = 10 marks.{" "}
+              <button
+                type="button"
+                onClick={downloadCIETemplate}
+                className="inline-flex items-center gap-1 font-semibold underline underline-offset-2 hover:text-amber-900 dark:hover:text-amber-200 ml-1"
+              >
+                <Download className="w-3 h-3" /> Template
+              </button>
+            </div>
+
+            {/* Assessment name */}
+            <div>
+              <label className="block text-xs font-semibold text-neutral-600 dark:text-neutral-400 mb-1">
+                Assessment Name
+              </label>
+              <input
+                type="text"
+                value={assessmentName}
+                onChange={e => setName(e.target.value)}
+                disabled={uploading}
+                className="w-full px-3 py-2 bg-white dark:bg-dark-bg-tertiary border border-neutral-200 dark:border-dark-border rounded-lg text-sm text-neutral-800 dark:text-dark-text-primary focus:outline-none focus:ring-2 focus:ring-primary-400 dark:focus:ring-dark-green-500 disabled:opacity-50"
+              />
+            </div>
+
+            {/* Drop zone */}
+            <DropZone onFile={setFile} file={file} uploading={uploading} />
+
+            {/* Actions */}
+            <div className="flex items-center gap-2 justify-end">
+              {file && !uploading && (
+                <button
+                  onClick={() => setFile(null)}
+                  className="text-xs text-neutral-400 hover:text-neutral-600 dark:hover:text-neutral-300 flex items-center gap-1"
+                >
+                  <X className="w-3 h-3" /> Clear
+                </button>
               )}
-              {result && (
-                <div className="mt-4">
-                  <UploadSummary result={result} onViewTable={() => tableRef.current?.scrollIntoView({ behavior: "smooth" })} onExport={() => {}} />
-                  {result.preview && (
-                    <div ref={tableRef} className="mt-4">
-                      <DatasetTable data={result.preview} columns={result.columns} />
-                    </div>
-                  )}
-                </div>
-              )}
+              <Button
+                size="sm"
+                onClick={handleUpload}
+                disabled={!file || uploading}
+                className="ml-auto"
+              >
+                {uploading
+                  ? <><Loader2 className="w-4 h-4 mr-1.5 animate-spin" />Uploading…</>
+                  : <><CloudUpload className="w-4 h-4 mr-1.5" />Upload {slot.label}</>}
+              </Button>
             </div>
           </motion.div>
         )}
       </AnimatePresence>
-    </div>
+    </motion.div>
   );
 }
 
 // ── SEE Upload Slot ───────────────────────────────────────────────────────────
 function SEEUploadSlot({ courseId, hasSEEUploaded, onUploaded }) {
-  const [expanded, setExpanded] = useState(false);
-  const [file, setFile] = useState(null);
+  const [file, setFile]       = useState(null);
   const [uploading, setUploading] = useState(false);
-  const [result, setResult] = useState(null);
+  const [result, setResult]   = useState(null);
   const fileRef = useRef(null);
 
   const downloadTemplate = () => {
-    const template = [
+    const ws = XLSX.utils.json_to_sheet([
       { USN: "1MS22CS001", SEE_Marks: 75 },
       { USN: "1MS22CS002", SEE_Marks: 82 },
       { USN: "1MS22CS003", SEE_Marks: 68 },
-    ];
-    const ws = XLSX.utils.json_to_sheet(template);
+    ]);
     ws["!cols"] = [{ wch: 15 }, { wch: 12 }];
     const wb = XLSX.utils.book_new();
     XLSX.utils.book_append_sheet(wb, ws, "SEE Marks Template");
     XLSX.writeFile(wb, "SEE_Marks_Template.xlsx");
   };
 
-  const handleFileChange = (e) => {
-    const f = e.target.files[0];
-    if (f) setFile(f);
-    e.target.value = "";
-  };
-
   const handleUpload = async () => {
     if (!file) { toast.error("Please select a file"); return; }
     setUploading(true);
     try {
-      // Parse the Excel / CSV file
       const buffer = await file.arrayBuffer();
       const wb = XLSX.read(buffer, { type: "array" });
       const ws = wb.Sheets[wb.SheetNames[0]];
       const rows = XLSX.utils.sheet_to_json(ws);
-
       const marksData = rows
-        .map((r) => ({
+        .map(r => ({
           usn: (r.USN || r.usn || "").toString().trim(),
           see_marks: parseFloat(r.SEE_Marks ?? r.see_marks ?? r.Marks ?? r.marks ?? NaN),
         }))
-        .filter((r) => r.usn && !isNaN(r.see_marks));
+        .filter(r => r.usn && !isNaN(r.see_marks));
 
       if (marksData.length === 0) {
         toast.error("No valid rows found. Ensure columns USN and SEE_Marks exist.");
         return;
       }
-
       const token = localStorage.getItem("token");
       const resp = await axios.post(
         `${API_BASE}/see-marks/courses/${courseId}/upload`,
         { marksData },
         { headers: { Authorization: `Bearer ${token}` } }
       );
-
       const data = resp.data.data || resp.data;
       setResult(data);
       toast.success(`SEE: ${data.uploaded ?? 0} uploaded, ${data.updated ?? 0} updated`);
@@ -240,130 +406,149 @@ function SEEUploadSlot({ courseId, hasSEEUploaded, onUploaded }) {
   };
 
   const isUploaded = result !== null || hasSEEUploaded;
-  const cRed = {
-    bg: "bg-red-50 dark:bg-red-950/30",
-    border: "border-red-300 dark:border-red-700",
-    text: "text-red-700 dark:text-red-300",
-    badge: "bg-red-100 dark:bg-red-900/40 text-red-700 dark:text-red-300",
-  };
 
   return (
-    <div className={`rounded-2xl border-2 overflow-hidden transition-all duration-200 ${isUploaded ? "border-green-400 dark:border-green-600" : "border-neutral-200 dark:border-dark-border"}`}>
-      <button
-        className="w-full flex items-center justify-between p-4 hover:bg-neutral-50 dark:hover:bg-dark-bg-secondary transition-colors"
-        onClick={() => setExpanded((p) => !p)}
-      >
-        <div className="flex items-center gap-3">
-          {isUploaded
-            ? <CheckCircle className="w-5 h-5 text-green-500 shrink-0" />
-            : <Circle className="w-5 h-5 text-neutral-300 dark:text-neutral-600 shrink-0" />}
-          <div className="text-left">
-            <p className={`font-semibold ${isUploaded ? "text-green-700 dark:text-green-400" : "text-neutral-800 dark:text-dark-text-primary"}`}>
-              SEE Marks
-            </p>
-            <p className="text-xs text-neutral-500 dark:text-dark-text-muted">
-              Semester End Examination total marks (out of 100)
-            </p>
-          </div>
+    <motion.div
+      layout
+      className={`rounded-2xl border-2 overflow-hidden bg-white dark:bg-dark-bg-secondary transition-colors duration-300
+        ${isUploaded ? "border-green-400 dark:border-green-600" : "border-red-200 dark:border-red-900"}`}
+    >
+      {/* Header */}
+      <div className="flex items-center gap-3 px-4 py-3 bg-red-50 dark:bg-red-950/30">
+        {isUploaded
+          ? <CheckCircle className="w-5 h-5 text-green-500 shrink-0" />
+          : <Circle className="w-5 h-5 text-neutral-300 dark:text-neutral-600 shrink-0" />}
+        <div className="flex-1">
+          <p className={`font-semibold text-sm ${isUploaded ? "text-green-700 dark:text-green-400" : "text-neutral-800 dark:text-dark-text-primary"}`}>
+            SEE Marks
+          </p>
+          <p className="text-[11px] text-neutral-400">Semester End Examination (out of 100)</p>
         </div>
-        <div className="flex items-center gap-2">
-          {isUploaded && (
-            <span className={`text-xs font-medium px-2 py-0.5 rounded-full ${cRed.badge}`}>Uploaded</span>
-          )}
-          {expanded ? <ChevronUp className="w-4 h-4 text-neutral-400" /> : <ChevronDown className="w-4 h-4 text-neutral-400" />}
-        </div>
-      </button>
+        {isUploaded && (
+          <span className="shrink-0 text-[10px] font-bold px-2 py-0.5 rounded-full bg-green-100 dark:bg-green-900/40 text-green-700 dark:text-green-300">
+            Uploaded
+          </span>
+        )}
+      </div>
 
-      <AnimatePresence>
-        {expanded && (
+      <AnimatePresence mode="wait">
+        {isUploaded ? (
           <motion.div
-            initial={{ height: 0, opacity: 0 }}
-            animate={{ height: "auto", opacity: 1 }}
-            exit={{ height: 0, opacity: 0 }}
-            transition={{ duration: 0.2 }}
-            className="overflow-hidden"
+            key="success"
+            initial={{ opacity: 0, y: 8 }}
+            animate={{ opacity: 1, y: 0 }}
+            exit={{ opacity: 0 }}
+            className="p-4 space-y-3"
           >
-            <div className={`p-4 border-t ${cRed.border} ${cRed.bg} space-y-3`}>
-              {/* Info */}
-              <p className="text-xs text-red-700 dark:text-red-300">
-                Upload an Excel/CSV with columns <strong>USN</strong> and <strong>SEE_Marks</strong> (0–100).
-                Marks are stored in the SEE attainment pipeline immediately.
-              </p>
-
-              {/* Template + file actions */}
-              <div className="flex gap-2 flex-wrap">
-                <Button variant="outline" size="sm" onClick={downloadTemplate}>
-                  <Download className="w-4 h-4 mr-1" /> Download Template
-                </Button>
-                <Button
-                  size="sm"
-                  variant="outline"
-                  onClick={() => fileRef.current?.click()}
-                  disabled={uploading}
-                  className={`${cRed.text} border-red-300`}
-                >
-                  <FileText className="w-4 h-4 mr-1" />
-                  {file ? file.name : "Choose File"}
-                </Button>
-                <input
-                  ref={fileRef}
-                  type="file"
-                  accept=".xlsx,.xls,.csv"
-                  className="hidden"
-                  onChange={handleFileChange}
-                />
-                {file && !result && (
-                  <>
-                    <Button size="sm" onClick={handleUpload} disabled={uploading}>
-                      {uploading
-                        ? <><div className="w-4 h-4 border-2 border-white border-t-transparent rounded-full animate-spin mr-2" />Uploading…</>
-                        : <><CloudUpload className="w-4 h-4 mr-2" />Upload SEE</>}
-                    </Button>
-                    <Button variant="outline" size="sm" onClick={() => setFile(null)}>
-                      <X className="w-4 h-4" />
-                    </Button>
-                  </>
-                )}
+            <div className="flex items-center gap-2 text-green-600 dark:text-green-400">
+              <CheckCircle className="w-4 h-4" />
+              <span className="text-sm font-medium">SEE marks loaded</span>
+            </div>
+            {result && (
+              <div className="grid grid-cols-3 gap-2">
+                <StatChip icon={Users}  label="Uploaded"  value={result.uploaded}  color="green"  />
+                <StatChip icon={RefreshCw} label="Updated" value={result.updated}  color="blue"   />
+                <StatChip icon={AlertCircle} label="Failed"  value={result.failed}   color="amber"  />
               </div>
-
-              {/* Result */}
-              {result && (
-                <div className="rounded-lg bg-green-50 dark:bg-green-900/20 border border-green-200 dark:border-green-800 p-3 text-sm text-green-800 dark:text-green-300">
-                  <CheckCircle className="w-4 h-4 inline mr-1" />
-                  <strong>Upload complete:</strong> {result.uploaded ?? 0} uploaded,{" "}
-                  {result.updated ?? 0} updated, {result.failed ?? 0} failed.
-                  {result.failed > 0 && (
-                    <p className="mt-1 text-xs text-red-600">
-                      {result.errors?.slice(0, 3).map((e) => `${e.usn}: ${e.error}`).join(" | ")}
-                    </p>
-                  )}
-                </div>
+            )}
+            <button
+              className="text-xs text-neutral-400 hover:text-neutral-600 dark:hover:text-neutral-300 underline underline-offset-2"
+              onClick={() => { setResult(null); setFile(null); }}
+            >
+              Re-upload
+            </button>
+          </motion.div>
+        ) : (
+          <motion.div
+            key="form"
+            initial={{ opacity: 0, y: 8 }}
+            animate={{ opacity: 1, y: 0 }}
+            exit={{ opacity: 0 }}
+            className="p-4 space-y-3"
+          >
+            <p className="text-xs text-red-700 dark:text-red-300">
+              Upload an Excel/CSV with columns <strong>USN</strong> and <strong>SEE_Marks</strong> (0–100).
+            </p>
+            <div className="flex gap-2 flex-wrap">
+              <Button variant="outline" size="sm" onClick={downloadTemplate}>
+                <Download className="w-3.5 h-3.5 mr-1" /> Template
+              </Button>
+              <Button
+                size="sm"
+                variant="outline"
+                onClick={() => fileRef.current?.click()}
+                disabled={uploading}
+                className="text-red-600 border-red-300"
+              >
+                <FileText className="w-3.5 h-3.5 mr-1" />
+                {file ? file.name : "Choose File"}
+              </Button>
+              <input
+                ref={fileRef}
+                type="file"
+                accept=".xlsx,.xls,.csv"
+                className="hidden"
+                onChange={e => { if (e.target.files[0]) setFile(e.target.files[0]); e.target.value = ""; }}
+              />
+              {file && !uploading && (
+                <button onClick={() => setFile(null)} className="text-xs text-neutral-400 hover:text-neutral-600 dark:hover:text-neutral-300">
+                  <X className="w-4 h-4" />
+                </button>
               )}
             </div>
+            {file && (
+              <Button size="sm" onClick={handleUpload} disabled={uploading}>
+                {uploading
+                  ? <><Loader2 className="w-4 h-4 mr-1.5 animate-spin" />Uploading…</>
+                  : <><CloudUpload className="w-4 h-4 mr-1.5" />Upload SEE</>}
+              </Button>
+            )}
           </motion.div>
         )}
       </AnimatePresence>
+    </motion.div>
+  );
+}
+
+// ── Section progress bar ──────────────────────────────────────────────────────
+function SectionProgress({ slots, uploadedSlotIds, localUploaded }) {
+  const done = slots.filter(s => uploadedSlotIds.has(s.id) || localUploaded.has(s.id)).length;
+  const pct  = Math.round((done / slots.length) * 100);
+  return (
+    <div className="flex items-center gap-3">
+      <div className="flex-1 h-1.5 rounded-full bg-neutral-200 dark:bg-dark-border overflow-hidden">
+        <motion.div
+          className="h-full rounded-full bg-green-400 dark:bg-green-500"
+          initial={{ width: 0 }}
+          animate={{ width: `${pct}%` }}
+          transition={{ duration: 0.5, ease: "easeOut" }}
+        />
+      </div>
+      <span className="text-xs font-medium text-neutral-400 dark:text-neutral-500 shrink-0">
+        {done}/{slots.length}
+      </span>
     </div>
   );
 }
 
 // ── Main hub ──────────────────────────────────────────────────────────────────
 const UploadMarksNew = () => {
-  const [courses, setCourses] = useState([]);
-  const [selectedCourse, setSelectedCourse] = useState("");
-  const [selectedCourseObj, setSelectedCourseObj] = useState(null);
+  const [courses, setCourses]             = useState([]);
+  const [selectedCourse, setSelected]     = useState("");
+  const [selectedCourseObj, setCourseObj] = useState(null);
   const [loadingCourses, setLoadingCourses] = useState(true);
-  const [uploadedNames, setUploadedNames] = useState([]);
-  const [refreshing, setRefreshing] = useState(false);
-  const [hasSEEUploaded, setHasSEEUploaded] = useState(false);
+  const [uploadedSlotIds, setUploadedSlotIds] = useState(new Set());
+  const [localUploaded, setLocalUploaded] = useState(new Set());   // uploaded this session
+  const [hasSEEUploaded, setSEEUploaded]  = useState(false);
+  const [refreshing, setRefreshing]       = useState(false);
 
   useEffect(() => { loadCourses(); }, []);
 
   const loadCourses = async () => {
     try {
       setLoadingCourses(true);
-      const response = await courseAPI.getAll();
-      setCourses(response.data.data || []);
+      const res = await courseAPI.getAll();
+      setCourses(res.data.data || []);
     } catch {
       toast.error("Failed to load courses");
     } finally {
@@ -376,29 +561,29 @@ const UploadMarksNew = () => {
     try {
       const res = await marksheetAPI.getByCourse(courseId);
       const sheets = res.data.data || [];
-      setUploadedNames(sheets.map(s => (s.assessment_name || "").toLowerCase()));
-    } catch {/* ignore */}
+      const names  = sheets.map(s => s.assessment_name || "");
+      setUploadedSlotIds(buildUploadedSlotIds(names));
+    } catch { /* ignore */ }
     try {
-      const token = localStorage.getItem("token");
+      const token  = localStorage.getItem("token");
       const seeRes = await axios.get(`${API_BASE}/see-marks/courses/${courseId}/status`, {
         headers: { Authorization: `Bearer ${token}` },
       });
-      setHasSEEUploaded((seeRes.data.data?.totalUploaded ?? 0) > 0);
-    } catch {/* ignore */}
+      setSEEUploaded((seeRes.data.data?.totalUploaded ?? 0) > 0);
+    } catch { /* ignore */ }
   }, []);
 
   const handleCourseChange = async (courseId) => {
-    setSelectedCourse(courseId);
-    setUploadedNames([]);
-    setHasSEEUploaded(false);
-    if (!courseId) { setSelectedCourseObj(null); return; }
-
-    // Always re-fetch the course from server for up-to-date course_type
+    setSelected(courseId);
+    setUploadedSlotIds(new Set());
+    setLocalUploaded(new Set());
+    setSEEUploaded(false);
+    if (!courseId) { setCourseObj(null); return; }
     try {
       const res = await courseAPI.getById(courseId);
-      setSelectedCourseObj(res.data.data || res.data);
+      setCourseObj(res.data.data || res.data);
     } catch {
-      setSelectedCourseObj(courses.find(c => c.id === courseId) || null);
+      setCourseObj(courses.find(c => c.id === courseId) || null);
     }
     await loadMarksheets(courseId);
   };
@@ -411,7 +596,8 @@ const UploadMarksNew = () => {
         courseAPI.getById(selectedCourse),
         loadMarksheets(selectedCourse),
       ]);
-      setSelectedCourseObj(courseRes.data.data || courseRes.data);
+      setCourseObj(courseRes.data.data || courseRes.data);
+      setLocalUploaded(new Set());
       toast.success("Refreshed");
     } catch {
       toast.error("Refresh failed");
@@ -420,19 +606,24 @@ const UploadMarksNew = () => {
     }
   };
 
+  // When a slot is uploaded this session, record it so the progress bar updates
+  const handleSlotUploaded = (slotId) => {
+    setLocalUploaded(prev => new Set([...prev, slotId]));
+  };
+
   const sections = selectedCourseObj ? getSections(selectedCourseObj.course_type) : [];
 
-  const courseTypeLabel = {
-    IPCC: "IPCC — Theory + Lab",
-    STANDALONE_LAB: "Standalone Lab",
-    STANDALONE_THEORY: "Theory",
-  }[selectedCourseObj?.course_type] || "Theory";
-
   const courseTypeBadge = {
-    IPCC: "bg-blue-100 text-blue-700 dark:bg-blue-900/30 dark:text-blue-300",
-    STANDALONE_LAB: "bg-green-100 text-green-700 dark:bg-green-900/30 dark:text-green-300",
-    STANDALONE_THEORY: "bg-neutral-100 text-neutral-700 dark:bg-neutral-800 dark:text-neutral-300",
-  }[selectedCourseObj?.course_type] || "bg-neutral-100 text-neutral-700 dark:bg-neutral-800 dark:text-neutral-300";
+    IPCC:             "bg-blue-100  text-blue-700  dark:bg-blue-900/30  dark:text-blue-300",
+    STANDALONE_LAB:   "bg-green-100 text-green-700 dark:bg-green-900/30 dark:text-green-300",
+    STANDALONE_THEORY:"bg-neutral-100 text-neutral-700 dark:bg-neutral-800 dark:text-neutral-300",
+  }[selectedCourseObj?.course_type] ?? "bg-neutral-100 text-neutral-700";
+
+  const courseTypeLabel = {
+    IPCC:             "IPCC — Theory + Lab",
+    STANDALONE_LAB:   "Standalone Lab",
+    STANDALONE_THEORY:"Theory",
+  }[selectedCourseObj?.course_type] ?? "Theory";
 
   return (
     <div className="min-h-screen bg-gradient-to-br from-neutral-100 to-neutral-200 dark:from-dark-bg-primary dark:to-dark-bg-secondary py-12">
@@ -444,7 +635,7 @@ const UploadMarksNew = () => {
             <div className="absolute -top-12 -right-12 w-48 h-48 rounded-full bg-white/10" />
             <div className="relative z-10">
               <h1 className="text-4xl md:text-5xl font-bold mb-2">Assessment Upload Hub</h1>
-              <p className="text-lg opacity-90">Select a course to see and upload all its components</p>
+              <p className="text-lg opacity-90">Select a course and upload all its assessment components</p>
             </div>
           </div>
         </motion.div>
@@ -457,7 +648,12 @@ const UploadMarksNew = () => {
                 <GraduationCap className="w-6 h-6 text-primary-600 dark:text-dark-green-500" />
                 <h2 className="text-xl font-bold text-neutral-800 dark:text-dark-text-primary">Select Course</h2>
                 {selectedCourse && (
-                  <button onClick={handleRefresh} disabled={refreshing} className="ml-auto p-1.5 rounded-lg hover:bg-neutral-100 dark:hover:bg-dark-bg-tertiary transition-colors" title="Refresh course type">
+                  <button
+                    onClick={handleRefresh}
+                    disabled={refreshing}
+                    className="ml-auto p-1.5 rounded-lg hover:bg-neutral-100 dark:hover:bg-dark-bg-tertiary transition-colors"
+                    title="Refresh"
+                  >
                     <RefreshCw className={`w-4 h-4 text-neutral-500 ${refreshing ? "animate-spin" : ""}`} />
                   </button>
                 )}
@@ -498,9 +694,6 @@ const UploadMarksNew = () => {
                   </p>
                   <p className="text-sm text-neutral-500 dark:text-dark-text-muted">
                     Semester {selectedCourseObj.semester} · {selectedCourseObj.year} · {selectedCourseObj.credits || 3} credits
-                    {uploadedNames.length > 0 && (
-                      <span className="ml-2 text-green-600 dark:text-green-400">· {uploadedNames.length} file{uploadedNames.length !== 1 ? "s" : ""} uploaded</span>
-                    )}
                   </p>
                 </div>
                 <span className={`text-xs font-bold px-3 py-1 rounded-full ${courseTypeBadge}`}>
@@ -508,53 +701,66 @@ const UploadMarksNew = () => {
                 </span>
               </div>
 
-              {/* IPCC info banner */}
+              {/* IPCC banner */}
               {selectedCourseObj.course_type === "IPCC" && (
                 <div className="flex items-start gap-3 px-4 py-3 rounded-xl bg-blue-50 dark:bg-blue-900/20 border border-blue-200 dark:border-blue-800 text-sm text-blue-800 dark:text-blue-300">
                   <FlaskConical className="w-4 h-4 mt-0.5 shrink-0" />
-                  <div>
-                    <span className="font-semibold">IPCC Course</span> — Upload theory CIA marks and lab CIA marks separately.
-                    Lab marks (CO5 &amp; CO6) will be included in attainment calculations automatically.
-                  </div>
+                  <span><strong>IPCC Course</strong> — Upload theory CIA marks and lab CIA marks separately.</span>
                 </div>
               )}
 
-              {sections.length === 0 && (
-                <div className="text-center py-12 text-neutral-400 dark:text-neutral-500">
-                  <p className="text-sm">No upload slots configured for this course type.</p>
-                  <p className="text-xs mt-1">Try refreshing — the course type may have been updated.</p>
-                  <Button variant="outline" size="sm" className="mt-4" onClick={handleRefresh}>
-                    <RefreshCw className="w-4 h-4 mr-2" /> Refresh
-                  </Button>
-                </div>
-              )}
-
+              {/* Sections */}
               {sections.map((section, si) => (
-                <motion.div key={section.title} initial={{ opacity: 0, y: 16 }} animate={{ opacity: 1, y: 0 }} transition={{ delay: si * 0.07 }}>
-                  <div className="flex items-center gap-2 mb-3">
+                <motion.div
+                  key={section.title}
+                  initial={{ opacity: 0, y: 16 }}
+                  animate={{ opacity: 1, y: 0 }}
+                  transition={{ delay: si * 0.07 }}
+                >
+                  {/* Section header */}
+                  <div className="flex items-center gap-2 mb-2">
                     <section.icon className="w-4 h-4 text-neutral-500 dark:text-dark-text-muted" />
                     <h3 className="text-sm font-bold text-neutral-500 dark:text-dark-text-muted uppercase tracking-wider">
                       {section.title}
                     </h3>
                     <div className="flex-1 h-px bg-neutral-200 dark:bg-dark-border" />
                   </div>
+
+                  {/* Section progress */}
+                  <div className="mb-4">
+                    <SectionProgress
+                      slots={section.slots}
+                      uploadedSlotIds={uploadedSlotIds}
+                      localUploaded={localUploaded}
+                    />
+                  </div>
+
+                  {/* Slot grid */}
                   <div className="grid grid-cols-1 md:grid-cols-2 gap-4">
                     {section.slots.map(slot => (
                       <UploadSlot
                         key={slot.id}
                         slot={slot}
                         courseId={selectedCourse}
-                        uploadedNames={uploadedNames}
-                        onUploaded={(name) => setUploadedNames(prev => [...prev, name.toLowerCase()])}
+                        uploadedSlotIds={uploadedSlotIds}
+                        onUploaded={(name) => {
+                          // Update exact-match detection from server-side names
+                          setUploadedSlotIds(prev => new Set([...prev, slot.id]));
+                          handleSlotUploaded(slot.id);
+                        }}
                       />
                     ))}
                   </div>
                 </motion.div>
               ))}
 
-              {/* SEE Section — always shown regardless of course type */}
-              <motion.div initial={{ opacity: 0, y: 16 }} animate={{ opacity: 1, y: 0 }} transition={{ delay: (sections.length) * 0.07 }}>
-                <div className="flex items-center gap-2 mb-3">
+              {/* SEE Section */}
+              <motion.div
+                initial={{ opacity: 0, y: 16 }}
+                animate={{ opacity: 1, y: 0 }}
+                transition={{ delay: sections.length * 0.07 }}
+              >
+                <div className="flex items-center gap-2 mb-2">
                   <FileText className="w-4 h-4 text-neutral-500 dark:text-dark-text-muted" />
                   <h3 className="text-sm font-bold text-neutral-500 dark:text-dark-text-muted uppercase tracking-wider">
                     Semester End Exam (SEE)
@@ -564,7 +770,7 @@ const UploadMarksNew = () => {
                 <SEEUploadSlot
                   courseId={selectedCourse}
                   hasSEEUploaded={hasSEEUploaded}
-                  onUploaded={() => setHasSEEUploaded(true)}
+                  onUploaded={() => setSEEUploaded(true)}
                 />
               </motion.div>
             </motion.div>

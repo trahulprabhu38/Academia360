@@ -94,9 +94,9 @@ const COMappingUpload = ({ courseId, marksheet }) => {
     const file = event.target.files[0];
     if (!file) return;
 
-    // Validate file type
-    if (!file.name.endsWith('.csv')) {
-      setError('Please upload a CSV file');
+    const ext = file.name.split('.').pop().toLowerCase();
+    if (!['csv', 'xlsx', 'xls'].includes(ext)) {
+      setError('Please upload a CSV or Excel (.xlsx / .xls) file');
       return;
     }
 
@@ -145,17 +145,16 @@ const COMappingUpload = ({ courseId, marksheet }) => {
     }
   };
 
-  const downloadTemplate = async () => {
+  const downloadTemplate = async (type = 'aat') => {
     try {
-      const response = await axios.get(`${API_URL}/co-mapping/template`, {
+      const isAAT = type === 'aat';
+      const response = await axios.get(`${API_URL}/co-mapping/template?type=${type}`, {
         responseType: 'blob'
       });
-
-      // Create download link
       const url = window.URL.createObjectURL(new Blob([response.data]));
       const link = document.createElement('a');
       link.href = url;
-      link.setAttribute('download', 'co-mapping-template.csv');
+      link.setAttribute('download', isAAT ? 'aat-quiz-co-mapping-template.xlsx' : 'cie-co-mapping-template.csv');
       document.body.appendChild(link);
       link.click();
       link.remove();
@@ -227,21 +226,32 @@ const COMappingUpload = ({ courseId, marksheet }) => {
               {existingMappings.length > 0 ? 'Re-upload CO Mapping' : 'Upload CO Mapping'}
               <input
                 type="file"
-                accept=".csv"
+                accept=".csv,.xlsx,.xls"
                 className="hidden"
                 onChange={handleFileSelect}
               />
             </label>
           </Button>
 
-          <Button
-            variant="outline"
-            onClick={downloadTemplate}
-            disabled={uploading || deleting}
-          >
-            <Download className="w-4 h-4 mr-2" />
-            Download Template
-          </Button>
+          {/aat|quiz/i.test(marksheet.assessment_name) ? (
+            <Button
+              variant="outline"
+              onClick={() => downloadTemplate('aat')}
+              disabled={uploading || deleting}
+            >
+              <Download className="w-4 h-4 mr-2" />
+              Download AAT/Quiz Template
+            </Button>
+          ) : (
+            <Button
+              variant="outline"
+              onClick={() => downloadTemplate('cie')}
+              disabled={uploading || deleting}
+            >
+              <Download className="w-4 h-4 mr-2" />
+              Download CIE Template
+            </Button>
+          )}
 
           {existingMappings.length > 0 && (
             <>
@@ -312,24 +322,61 @@ const COMappingUpload = ({ courseId, marksheet }) => {
         )}
 
         {/* Format hint */}
-        <div className="mt-4 p-4 bg-neutral-50 dark:bg-dark-bg-tertiary border border-neutral-200 dark:border-dark-border rounded-xl space-y-2">
-          <p className="text-xs font-semibold text-neutral-700 dark:text-dark-text-primary">CSV format: <span className="font-mono font-normal">Column, Max Marks, CO</span></p>
-          <div className="grid grid-cols-2 gap-x-6 gap-y-1 text-xs text-neutral-600 dark:text-dark-text-secondary">
+        <div className="mt-4 p-4 bg-neutral-50 dark:bg-dark-bg-tertiary border border-neutral-200 dark:border-dark-border rounded-xl space-y-3">
+          <p className="text-xs font-semibold text-neutral-700 dark:text-dark-text-primary">
+            Accepted file formats: <span className="font-mono font-normal">.csv, .xlsx, .xls</span>
+          </p>
+
+          <div className="space-y-2 text-xs text-neutral-600 dark:text-dark-text-secondary">
+
+            {/* Option 1 */}
             <div>
-              <p className="font-semibold text-neutral-700 dark:text-dark-text-primary mb-0.5">Single 10-mark question</p>
-              <code className="block font-mono bg-neutral-100 dark:bg-dark-bg-secondary px-2 py-1 rounded text-[0.65rem]">
-                q1a,10,co1
+              <p className="font-semibold text-neutral-700 dark:text-dark-text-primary mb-0.5">
+                Option 1 — Dedicated mapping file <span className="font-normal text-neutral-400">(recommended)</span>
+              </p>
+              <code className="block font-mono bg-neutral-100 dark:bg-dark-bg-secondary px-2 py-1.5 rounded text-[0.65rem] whitespace-pre leading-relaxed">
+{`Column,Max Marks,CO
+q1a,6,co1
+q1b,4,co1
+q2a,10,co3
+q3a,5,co2
+q3b,5,co2`}
               </code>
+              <p className="mt-0.5 text-[0.65rem] text-neutral-400">
+                CO values accept <strong>CO1</strong>, <strong>co1</strong>, or plain <strong>1</strong>. Max Marks column is optional (defaults to 10).
+              </p>
             </div>
+
+            {/* Option 2 */}
             <div>
-              <p className="font-semibold text-neutral-700 dark:text-dark-text-primary mb-0.5">Split A+B (any marks, any Q)</p>
-              <code className="block font-mono bg-neutral-100 dark:bg-dark-bg-secondary px-2 py-1 rounded text-[0.65rem]">
-                q3a,6,co2{"\n"}q3b,4,co2
+              <p className="font-semibold text-neutral-700 dark:text-dark-text-primary mb-0.5">
+                Option 2 — Same CIE marks file you already uploaded
+              </p>
+              <p className="text-[0.65rem] text-neutral-400">
+                The parser automatically extracts CO mappings from the multi-row header
+                (the rows that list CO1, CO2… above the Q1A, Q1B… question names).
+                Just upload the same file you used for marks — no separate mapping file needed.
+              </p>
+            </div>
+
+            {/* Option 3 */}
+            <div>
+              <p className="font-semibold text-neutral-700 dark:text-dark-text-primary mb-0.5">
+                Option 3 — Transposed format <span className="font-normal text-neutral-400">(for AAT / Quiz)</span>
+              </p>
+              <code className="block font-mono bg-neutral-100 dark:bg-dark-bg-secondary px-2 py-1.5 rounded text-[0.65rem] whitespace-pre leading-relaxed">
+{`AAT,QUIZ
+CO,CO
+CO1,CO2,CO3,CO4,CO1,CO2,CO3,CO4`}
               </code>
+              <p className="mt-0.5 text-[0.65rem] text-neutral-400">
+                Headers = question names (AAT, QUIZ). Row 2 = "CO" label. Row 3 = comma-separated CO numbers mapped to each column. Download the AAT/Quiz template (.xlsx) for the exact format.
+              </p>
             </div>
           </div>
-          <p className="text-[0.65rem] text-neutral-500 dark:text-dark-text-muted">
-            Q1 &amp; Q2 are always compulsory. Q3/Q4, Q5/Q6, Q7/Q8… are optional pairs — all sub-parts of the student's chosen question are counted automatically. Max marks can be any value (e.g. 6+4, 5+5).
+
+          <p className="text-[0.65rem] text-neutral-500 dark:text-dark-text-muted border-t border-neutral-200 dark:border-dark-border pt-2">
+            Q1 &amp; Q2 are always compulsory. Q3/Q4, Q5/Q6, Q7/Q8 are optional pairs — sub-parts are grouped automatically.
           </p>
         </div>
       </CardContent>

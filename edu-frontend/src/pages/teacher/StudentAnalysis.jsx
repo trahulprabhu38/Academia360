@@ -41,7 +41,7 @@ import {
   Analytics,
   PersonSearch,
 } from "@mui/icons-material";
-import { courseAPI } from "../../services/api";
+import { courseAPI, courseOutcomesAPI } from "../../services/api";
 import IndividualStudentAnalysis from "../../components/teacher/IndividualStudentAnalysis";
 
 const API_URL = import.meta.env.VITE_API_URL || "http://localhost:8080/api";
@@ -56,6 +56,7 @@ const StudentAnalysis = () => {
   const [detailedResults, setDetailedResults] = useState(null);
   const [error, setError] = useState(null);
   const [activeTab, setActiveTab] = useState(0);
+  const [coStatus, setCOStatus] = useState(null); // null | { count: number, cos: [] }
 
   useEffect(() => {
     loadCourses();
@@ -71,6 +72,19 @@ const StudentAnalysis = () => {
     }
   };
 
+  const checkCOs = async (courseId) => {
+    try {
+      const res = await courseOutcomesAPI.getByCourse(courseId);
+      const cos = res.data.cos || [];
+      setCOStatus({ count: cos.length, cos });
+      return cos.length > 0;
+    } catch (err) {
+      console.error('CO check failed:', err.response?.data || err.message);
+      setCOStatus(null);
+      return false;
+    }
+  };
+
   const runCalculations = async () => {
     if (!selectedCourse) {
       toast.error("Please select a course first");
@@ -80,29 +94,6 @@ const StudentAnalysis = () => {
     try {
       setCalculating(true);
       const token = localStorage.getItem("token");
-
-      // Check if COs are defined before running calculations
-      console.log("🔍 Checking if COs are defined...");
-      try {
-        const cosResponse = await axios.get(
-          `${API_URL}/detailed-calculations/course/${selectedCourse}/complete-report`,
-          { headers: { Authorization: `Bearer ${token}` } }
-        );
-
-        const hasCOs = cosResponse.data.data?.combinedCOAttainment?.length > 0 ||
-                       cosResponse.data.data?.coLevelAnalysis?.length > 0;
-
-        if (!hasCOs) {
-          toast.error("⚠️ Course Outcomes (COs) are not defined for this course. Please upload COs first before running calculations.", {
-            duration: 5000,
-          });
-          setCalculating(false);
-          return;
-        }
-      } catch (checkError) {
-        // If checking fails, proceed with calculation attempt (will fail with proper error)
-        console.warn("Could not pre-check COs, proceeding with calculation...");
-      }
 
       console.log("🚀 TRIGGERING DETAILED CALCULATIONS FOR COURSE:", selectedCourse);
 
@@ -196,7 +187,11 @@ const StudentAnalysis = () => {
 
   useEffect(() => {
     if (selectedCourse) {
+      setCOStatus(null);
+      checkCOs(selectedCourse);
       loadDetailedResults(selectedCourse);
+    } else {
+      setCOStatus(null);
     }
   }, [selectedCourse]);
 
@@ -302,6 +297,18 @@ const StudentAnalysis = () => {
             </FormControl>
           </CardContent>
         </MotionCard>
+
+        {/* CO status banner — shown as soon as a course is selected */}
+        {selectedCourse && coStatus !== null && (
+          <Alert
+            severity={coStatus.count > 0 ? "success" : "error"}
+            sx={{ mb: 3 }}
+          >
+            {coStatus.count > 0
+              ? `✅ Course Outcomes uploaded — ${coStatus.count} CO${coStatus.count !== 1 ? "s" : ""} defined (${coStatus.cos.map(c => `CO${c.co_number}`).join(", ")}). Ready to run calculations.`
+              : "⚠️ No Course Outcomes (COs) are defined for this course. Please upload COs before running calculations."}
+          </Alert>
+        )}
 
         {error && (
           <Alert severity="warning" sx={{ mb: 3 }}>

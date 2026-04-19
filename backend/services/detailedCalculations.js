@@ -186,6 +186,109 @@ class DetailedCalculationsService {
   }
 
   /**
+   * Detect and repair marksheet tables that were stored with wrong column names.
+   * Some CIE CSVs have a multi-row header:
+   *   DB col name:  "COs mapped", "COs mapped.1", ...
+   *   Data row 1:   CO1, CO1, CO3, ...
+   *   Data row 2:   Q1A, Q1B, Q2A, ...   ← actual Q-column names
+   *   Data row 3+:  actual marks
+   *
+   * This method renames DB columns to the Q-names found in the data, removes
+   * the header rows, and updates marksheets.columns.
+   * Returns the corrected columns array, or null if no repair was needed.
+   */
+  async _repairMarksheetTable(marksheet) {
+    const { id: marksheetId, table_name, columns } = marksheet;
+
+    const needsRepair = columns.some(c =>
+      /^cos? mapped/i.test(c.trim()) || /^co'?s? mapped/i.test(c.trim())
+    );
+    if (!needsRepair) return null;
+
+    console.log(`\n🔧 Repairing marksheet table "${table_name}" (wrong column names detected)`);
+
+    const Q_PATTERN = /^[Qq]\d+[a-zA-Z]?$/;
+    const firstRows = await pool.query(`SELECT * FROM "${table_name}" LIMIT 5`);
+
+    let renameMap = null; // { "COs mapped.1": "q1a", ... }
+    for (const row of firstRows.rows) {
+      const candidate = {};
+      for (const [dbCol, val] of Object.entries(row)) {
+        if (val && Q_PATTERN.test(String(val).trim())) {
+          candidate[dbCol] = String(val).trim().toLowerCase();
+        }
+      }
+      if (Object.keys(candidate).length >= 4) {
+        renameMap = candidate;
+        break;
+      }
+    }
+
+    if (!renameMap) {
+      // Fallback for AAT/Quiz tables: no Q-name row exists — infer column names
+      // from the assessment name itself and the non-metadata columns in order.
+      const assessUpper = (marksheet.assessment_name || '').toUpperCase();
+      const markCols = columns.filter(c => {
+        const l = c.toLowerCase().trim();
+        return !['sl no.', 'sl no', 'usn', 'student name', 'name'].includes(l);
+      });
+
+      const inferredNames = [];
+      if (assessUpper.includes('AAT'))  inferredNames.push('aat');
+      if (assessUpper.includes('QUIZ')) inferredNames.push('quiz');
+
+      if (inferredNames.length > 0 && markCols.length > 0) {
+        renameMap = {};
+        for (let i = 0; i < Math.min(inferredNames.length, markCols.length); i++) {
+          renameMap[markCols[i]] = inferredNames[i];
+        }
+        console.log(`  ℹ️  Using assessment-name inference for AAT/Quiz columns`);
+      } else {
+        console.log('  ⚠️ Could not find Q-name row — skipping repair');
+        return null;
+      }
+    }
+
+    const client = await pool.connect();
+    try {
+      await client.query('BEGIN');
+
+      // Rename each column (skip if target name already exists)
+      const existingLower = new Set(columns.map(c => c.toLowerCase()));
+      for (const [dbCol, qName] of Object.entries(renameMap)) {
+        if (existingLower.has(qName)) continue;
+        await client.query(`ALTER TABLE "${table_name}" RENAME COLUMN "${dbCol}" TO "${qName}"`);
+        console.log(`  ✅ Renamed "${dbCol}" → "${qName}"`);
+      }
+
+      // Delete header rows (USN column value is literally "USN")
+      const usnColName = columns.find(c => c.toUpperCase() === 'USN') || 'USN';
+      const del = await client.query(
+        `DELETE FROM "${table_name}" WHERE "${usnColName}" = 'USN'`
+      );
+      console.log(`  🗑️ Deleted ${del.rowCount} header row(s)`);
+
+      // Build updated columns list
+      const newColumns = columns.map(c => renameMap[c] ?? c);
+
+      await client.query(
+        'UPDATE marksheets SET columns = $1 WHERE id = $2',
+        [JSON.stringify(newColumns), marksheetId]
+      );
+
+      await client.query('COMMIT');
+      console.log(`  ✅ Repair complete`);
+      return newColumns;
+    } catch (err) {
+      await client.query('ROLLBACK');
+      console.error('  ❌ Repair failed:', err.message);
+      throw err;
+    } finally {
+      client.release();
+    }
+  }
+
+  /**
    * Detect if a column should be excluded (metadata, not a question column)
    * CONSERVATIVE: Only exclude columns we're CERTAIN are not marks
    */
@@ -269,15 +372,16 @@ class DetailedCalculationsService {
       const isNumeric = await this.isNumericQuestionColumn(tableName, col, sampleRows);
 
       if (isNumeric) {
-        // Calculate max marks from data (excluding NaN strings)
+        // Calculate max marks from data — filter to rows that look numeric first
+        // to avoid CAST failure on any stray text values (e.g. "CO1", "Q1A")
         const maxQuery = `
-          SELECT MAX(CAST("${col}" AS DECIMAL)) as max_val
-          FROM "${tableName}"
-          WHERE "${col}" IS NOT NULL
-            AND "${col}" != 'NaN'
-            AND "${col}" != 'nan'
-            AND "${col}" != 'NAN'
-            AND "${col}" != ''
+          SELECT MAX(val::DECIMAL) as max_val
+          FROM (
+            SELECT "${col}" AS val FROM "${tableName}"
+            WHERE "${col}" IS NOT NULL
+              AND "${col}" !~ '^\\s*$'
+              AND "${col}" !~ '[^0-9.\\-]'
+          ) sub
         `;
         const maxResult = await pool.query(maxQuery);
         const maxMarks = parseFloat(maxResult.rows[0]?.max_val) || 0;
@@ -478,7 +582,12 @@ class DetailedCalculationsService {
    * PHASE 5: Vertical Analysis (per question)
    */
   async calculateQuestionVerticalAnalysis(courseId, marksheet, data) {
-    const { id: marksheetId, table_name, columns } = marksheet;
+    let { id: marksheetId, table_name } = marksheet;
+    let columns = marksheet.columns;
+
+    // Repair table if stored with wrong column names (multi-row header CSV format)
+    const repairedColumns = await this._repairMarksheetTable(marksheet);
+    if (repairedColumns) columns = repairedColumns;
 
     console.log(`\n=== VERTICAL ANALYSIS for ${marksheet.assessment_name} ===`);
 
@@ -713,8 +822,8 @@ class DetailedCalculationsService {
       let quizMarks = 0;
 
       // For CIE assessments, exclude AAT and QUIZ from total
-      const assessmentType = assessment_name.toUpperCase();
-      const isCIE = assessmentType.includes('CIE');
+      // Matches "CIE1", "CIA 1", "CIA-1", "AICIE1", etc.
+      const isCIE = /CIA[\s._-]*\d|CIE[\s._-]*\d|CIE\d/i.test(assessment_name);
 
       // Determine which questions this student attempted (handles optional pairs)
       const attemptedQuestions = this.getAttemptedQuestions(row, questionColumns);
@@ -863,11 +972,14 @@ class DetailedCalculationsService {
     const avgPercentage = horizontalResults.reduce((sum, s) => sum + s.percentage, 0) / totalStudents;
 
     // Determine assessment type and scaling
-    const assessmentType = assessment_name.toUpperCase().includes('CIE1') ? 'CIE1' :
-                          assessment_name.toUpperCase().includes('CIE2') ? 'CIE2' :
-                          assessment_name.toUpperCase().includes('CIE3') ? 'CIE3' :
-                          assessment_name.toUpperCase().includes('AAT') ? 'AAT' :
-                          assessment_name.toUpperCase().includes('QUIZ') ? 'QUIZ' : 'OTHER';
+    // Supports: "CIE1", "CIA 1", "CIA-1", "AICIE1", "CIA_1", etc.
+    const _n = assessment_name;
+    const assessmentType =
+      /CIA[\s._-]*1\b|CIE[\s._-]*1\b|CIE1/i.test(_n) ? 'CIE1' :
+      /CIA[\s._-]*2\b|CIE[\s._-]*2\b|CIE2/i.test(_n) ? 'CIE2' :
+      /CIA[\s._-]*3\b|CIE[\s._-]*3\b|CIE3/i.test(_n) ? 'CIE3' :
+      /aat/i.test(_n) ? 'AAT' :
+      /quiz/i.test(_n) ? 'QUIZ' : 'OTHER';
 
     let originalMax = maxMarksPossible;
     let scaledMax = maxMarksPossible;
@@ -887,9 +999,14 @@ class DetailedCalculationsService {
         original_max, scaled_max, scaling_factor
       ) VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11)
       ON CONFLICT (marksheet_id) DO UPDATE SET
+        assessment_type = EXCLUDED.assessment_type,
         total_students = EXCLUDED.total_students,
+        max_marks_possible = EXCLUDED.max_marks_possible,
         avg_marks = EXCLUDED.avg_marks,
         avg_percentage = EXCLUDED.avg_percentage,
+        original_max = EXCLUDED.original_max,
+        scaled_max = EXCLUDED.scaled_max,
+        scaling_factor = EXCLUDED.scaling_factor,
         calculated_at = CURRENT_TIMESTAMP
     `, [
       courseId, marksheetId, assessment_name, assessmentType,
@@ -1025,7 +1142,7 @@ class DetailedCalculationsService {
 
     // Get AAT/QUIZ marksheet to extract AAT and QUIZ separately
     const aatMarksheetQuery = await pool.query(`
-      SELECT id, table_name
+      SELECT id, table_name, columns
       FROM marksheets
       WHERE course_id = $1 AND (
         assessment_name ILIKE '%AAT%' OR
@@ -1034,8 +1151,13 @@ class DetailedCalculationsService {
       LIMIT 1
     `, [courseId]);
 
-    const aatTableName = aatMarksheetQuery.rows[0]?.table_name;
-    console.log(`AAT table name: ${aatTableName || 'NOT FOUND'}`);
+    const aatMarksheetRow  = aatMarksheetQuery.rows[0];
+    const aatTableName     = aatMarksheetRow?.table_name;
+    const aatTableColumns  = aatMarksheetRow?.columns || [];
+    // Find actual column names case-insensitively
+    const aatColName  = aatTableColumns.find(c => c.toLowerCase() === 'aat');
+    const quizColName = aatTableColumns.find(c => c.toLowerCase() === 'quiz');
+    console.log(`AAT table: ${aatTableName || 'NOT FOUND'}, AAT col: ${aatColName}, QUIZ col: ${quizColName}`);
 
     const finalResults = [];
 
@@ -1071,25 +1193,28 @@ class DetailedCalculationsService {
       let aatMarks = 0;
       let quizMarks = 0;
 
-      if (aatTableName) {
-        const aatQuizQuery = await pool.query(`
-          SELECT "AAT", "QUIZ"
-          FROM "${aatTableName}"
-          WHERE UPPER("USN") = UPPER($1)
-          LIMIT 1
-        `, [usn]);
+      if (aatTableName && (aatColName || quizColName)) {
+        try {
+          const selectCols = [aatColName, quizColName].filter(Boolean).map(c => `"${c}"`).join(', ');
+          const aatQuizQuery = await pool.query(
+            `SELECT ${selectCols} FROM "${aatTableName}" WHERE UPPER("USN") = UPPER($1) LIMIT 1`,
+            [usn]
+          );
 
-        if (aatQuizQuery.rows.length > 0) {
-          const row = aatQuizQuery.rows[0];
-          const aatVal = row.AAT || row.aat;
-          const quizVal = row.QUIZ || row.quiz;
+          if (aatQuizQuery.rows.length > 0) {
+            const row = aatQuizQuery.rows[0];
+            const aatVal  = aatColName  ? row[aatColName]  : null;
+            const quizVal = quizColName ? row[quizColName] : null;
 
-          if (aatVal && aatVal !== 'NaN' && aatVal !== 'nan') {
-            aatMarks = Math.min(parseFloat(aatVal) || 0, 10); // Cap at 10
+            if (aatVal && aatVal !== 'NaN' && aatVal !== 'nan') {
+              aatMarks = Math.min(parseFloat(aatVal) || 0, 10);
+            }
+            if (quizVal && quizVal !== 'NaN' && quizVal !== 'nan') {
+              quizMarks = Math.min(parseFloat(quizVal) || 0, 10);
+            }
           }
-          if (quizVal && quizVal !== 'NaN' && quizVal !== 'nan') {
-            quizMarks = Math.min(parseFloat(quizVal) || 0, 10); // Cap at 10
-          }
+        } catch (aatErr) {
+          console.warn(`  ⚠️ Could not fetch AAT/QUIZ for ${usn}: ${aatErr.message} — using 0`);
         }
       }
 
@@ -1178,40 +1303,69 @@ class DetailedCalculationsService {
         throw new Error('No marksheets found for this course. Please upload assessment marks first.');
       }
 
+      const processedCount = { ok: 0, skipped: 0 };
       for (const marksheet of marksheets) {
         console.log(`\n--- Processing: ${marksheet.assessment_name} ---`);
+        try {
+          // Step 1: Vertical Analysis (per-question)
+          const verticalResults = await this.calculateQuestionVerticalAnalysis(courseId, marksheet);
 
-        // Step 1: Vertical Analysis (per-question)
-        const verticalResults = await this.calculateQuestionVerticalAnalysis(courseId, marksheet);
+          if (verticalResults.length === 0) {
+            console.warn(`⚠️  No question columns detected in ${marksheet.assessment_name}, skipping...`);
+            processedCount.skipped++;
+            continue;
+          }
 
-        if (verticalResults.length === 0) {
-          console.warn(`⚠️  No question columns detected in ${marksheet.assessment_name}, skipping...`);
-          continue;
+          // Extract question columns for horizontal analysis
+          const questionColumns = verticalResults.map(v => ({
+            columnName: v.questionColumn,
+            maxMarks: v.maxMarks,
+            coNumber: v.coNumber
+          }));
+
+          // Step 2: Horizontal Analysis (per-student)
+          const horizontalResults = await this.calculateStudentHorizontalAnalysis(courseId, marksheet, questionColumns);
+
+          if (horizontalResults.length === 0) {
+            console.warn(`⚠️  No students processed for ${marksheet.assessment_name}, skipping summary steps`);
+            processedCount.skipped++;
+            continue;
+          }
+
+          // Step 3: File-Level Summary
+          await this.calculateFileLevelSummary(courseId, marksheet, horizontalResults);
+
+          // Step 4: CO-Level Analysis
+          await this.calculateCOLevelAnalysis(courseId, marksheet, verticalResults);
+          processedCount.ok++;
+        } catch (msErr) {
+          console.error(`❌ Failed processing ${marksheet.assessment_name}: ${msErr.message}`);
+          processedCount.skipped++;
+          // Continue with next marksheet — partial results are better than none
         }
+      }
 
-        // Extract question columns for horizontal analysis
-        const questionColumns = verticalResults.map(v => ({
-          columnName: v.questionColumn,
-          maxMarks: v.maxMarks,
-          coNumber: v.coNumber
-        }));
-
-        // Step 2: Horizontal Analysis (per-student)
-        const horizontalResults = await this.calculateStudentHorizontalAnalysis(courseId, marksheet, questionColumns);
-
-        // Step 3: File-Level Summary
-        await this.calculateFileLevelSummary(courseId, marksheet, horizontalResults);
-
-        // Step 4: CO-Level Analysis
-        await this.calculateCOLevelAnalysis(courseId, marksheet, verticalResults);
+      if (processedCount.ok === 0) {
+        throw new Error(
+          'No marksheets could be processed. Please ensure CO mappings are uploaded ' +
+          'for each assessment before running calculations.'
+        );
       }
 
       // Step 5: Final CIE Composition (across all assessments)
-      await this.calculateFinalCIEComposition(courseId);
+      try {
+        await this.calculateFinalCIEComposition(courseId);
+      } catch (fceErr) {
+        console.error(`⚠️ Final CIE composition failed (partial data ok): ${fceErr.message}`);
+      }
 
       // Step 6: Calculate Combined CO Attainment (across CIE1, CIE2, CIE3, AAT)
-      const combinedCOAttainmentService = (await import('./combinedCOAttainment.js')).default;
-      await combinedCOAttainmentService.calculateCombinedCOAttainment(courseId);
+      try {
+        const combinedCOAttainmentService = (await import('./combinedCOAttainment.js')).default;
+        await combinedCOAttainmentService.calculateCombinedCOAttainment(courseId);
+      } catch (coErr) {
+        console.error(`⚠️ Combined CO attainment failed (partial data ok): ${coErr.message}`);
+      }
 
       console.log(`\n========================================`);
       console.log(`CALCULATIONS COMPLETED SUCCESSFULLY!`);

@@ -120,6 +120,12 @@ async def upload_legacy(
         logger.info(f"📊 Read {len(df)} rows and {len(df.columns)} columns")
         logger.info(f"📋 Columns: {list(df.columns)}")
 
+        # Fix multi-row header format (COs mapped → Q1A, Q1B, etc.)
+        df_fixed, fixed_q_columns = marksheet_parser.fix_multirow_header(df)
+        if fixed_q_columns:
+            logger.info(f"🔧 Multi-row header fixed. Q-columns: {fixed_q_columns}")
+            df = df_fixed
+
         # Generate table name
         safe_course = re.sub(r'[^a-zA-Z0-9]', '', courseId.lower())
         safe_assessment = re.sub(r'[^a-zA-Z0-9]', '', assessmentName.lower())
@@ -196,7 +202,25 @@ async def upload_legacy(
             usn_to_id = {s['usn']: s['id'] for s in students}
 
             logger.info(f"👨‍🎓 Found {len(students)} enrolled students")
-            logger.info(f"📊 CIE config: total_max_marks={cie_max_marks}, q_columns={q_columns}")
+
+            # Infer per-column max marks from actual data.
+            # Each main question in a CIE paper is 10 marks; sub-questions
+            # (Q1A + Q1B) together make up that 10.  We infer individual
+            # sub-question maxes by scanning each column for its highest value.
+            col_max_marks = marksheet_parser.infer_max_marks_from_data(df, q_columns)
+            q_groups = marksheet_parser.group_q_columns_by_question_number(q_columns)
+            logger.info(f"📊 CIE config: total_max_marks={cie_max_marks}, "
+                        f"q_columns={q_columns}, main_questions={list(q_groups.keys())}")
+
+            # For any column where inference returned 0 (no data), fall back to
+            # dividing 10 marks equally among sub-columns in the same group.
+            for q_num, group_cols in q_groups.items():
+                if q_num == 0:
+                    continue
+                n = len(group_cols)
+                for col in group_cols:
+                    if col_max_marks.get(col, 0) == 0:
+                        col_max_marks[col] = round(10.0 / n, 2)
 
             # Prepare score records
             score_records = []
@@ -207,13 +231,12 @@ async def upload_legacy(
                     missing_students.append(score['usn'])
                     continue
 
-                per_question_max = cie_max_marks / len(q_columns) if q_columns else 10
                 score_records.append({
                     'student_id': student_id,
                     'column_name': score['column_name'],
                     'co_number': score['co_number'],
                     'marks_obtained': score['marks_obtained'],
-                    'max_marks': per_question_max
+                    'max_marks': col_max_marks.get(score['column_name'], 10.0)
                 })
 
             if missing_students:
@@ -224,12 +247,12 @@ async def upload_legacy(
                 db_client.bulk_insert_student_scores(assessment_id, score_records)
                 logger.info(f"✅ Inserted {len(score_records)} scores")
 
-                # Insert column metadata
+                # Insert column metadata with correct per-column max marks
                 column_metadata = [
                     {
                         'column_name': q_col,
                         'co_number': co_mappings.get(q_col, 1),
-                        'max_marks': per_question_max
+                        'max_marks': col_max_marks.get(q_col, 10.0)
                     }
                     for q_col in q_columns
                 ]
@@ -414,42 +437,53 @@ async def upload_marksheet(
         students = db_client.get_students_by_course(course_id)
         usn_to_id = {s['usn']: s['id'] for s in students}
         
+        # Infer per-column max marks from actual data so that sub-questions
+        # (Q1A, Q1B) get their real individual maxes rather than an equal split
+        # of the total assessment max across all columns.
+        col_max_marks = marksheet_parser.infer_max_marks_from_data(df, q_columns)
+        q_groups = marksheet_parser.group_q_columns_by_question_number(q_columns)
+
+        for q_num, group_cols in q_groups.items():
+            if q_num == 0:
+                continue
+            n = len(group_cols)
+            for col in group_cols:
+                if col_max_marks.get(col, 0) == 0:
+                    col_max_marks[col] = round(10.0 / n, 2)
+
         # Prepare score records with student IDs
         score_records = []
         missing_students = set()
-        
+
         for score in scores:
             student_id = usn_to_id.get(score['usn'])
             if not student_id:
                 missing_students.add(score['usn'])
                 continue
-            
-            # Infer max marks from data if not in co_mappings
-            max_marks_for_q = max_marks / len(q_columns) if q_columns else 10
-            
+
             score_records.append({
                 'student_id': student_id,
                 'column_name': score['column_name'],
                 'co_number': score['co_number'],
                 'marks_obtained': score['marks_obtained'],
-                'max_marks': max_marks_for_q
+                'max_marks': col_max_marks.get(score['column_name'], 10.0)
             })
-        
+
         if missing_students:
             logger.warning(f"Students not found in course: {missing_students}")
-        
+
         # Bulk insert student scores
         logger.info(f"Inserting {len(score_records)} score records")
         db_client.bulk_insert_student_scores(
             assessment_id, score_records
         )
-        
-        # Insert raw marks column metadata
+
+        # Insert raw marks column metadata with correct per-column max marks
         column_metadata = [
             {
                 'column_name': q_col,
                 'co_number': co_mappings.get(q_col),
-                'max_marks': max_marks / len(q_columns) if q_columns else 10
+                'max_marks': col_max_marks.get(q_col, 10.0)
             }
             for q_col in q_columns
         ]

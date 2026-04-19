@@ -16,11 +16,11 @@ logger = logging.getLogger(__name__)
 class MarksheetParser:
     """Parse CSV/XLSX marksheet files"""
     
-    # Column patterns to identify Q-columns
+    # Column patterns to identify Q-columns (supports Q1, Q1a, Q1A, Q1b, Q1B sub-questions)
     Q_COLUMN_PATTERNS = [
-        r'^Q\d+[a-z]?$',  # Q1, Q2a, Q3b, etc.
-        r'^q\d+[a-z]?$',  # q1, q2a, etc.
-        r'^\d+[a-z]?$',   # 1, 2a, 3b, etc.
+        r'^Q\d+[a-zA-Z]?$',  # Q1, Q2a, Q3b, Q1A, Q1B, etc.
+        r'^q\d+[a-zA-Z]?$',  # q1, q2a, q1b, etc.
+        r'^\d+[a-zA-Z]?$',   # 1, 2a, 3b, etc.
     ]
     
     # Columns to ignore
@@ -75,6 +75,49 @@ class MarksheetParser:
             logger.error(f"Error reading file: {e}")
             raise ValueError(f"Error reading file: {e}")
     
+    @classmethod
+    def fix_multirow_header(cls, df: pd.DataFrame):
+        """
+        Detect and fix multi-row header format.
+        Some CIE CSV files look like:
+          header row:  Sl No., USN, STUDENT NAME, COs mapped, COs mapped, ...
+          data row 0:  Sl No., USN, STUDENT NAME, CO1, CO1, CO3, ...
+          data row 1:  Sl No., USN, STUDENT NAME, Q1A, Q1B, Q2A, ...
+          data row 2+: actual student marks
+
+        Renames "COs mapped.N" columns to the actual Q-names found in the data row,
+        removes the non-student header rows, and returns (df_fixed, q_columns).
+        If no multi-row header is detected returns (df_unchanged, []).
+        """
+        rename_map = {}   # { "COs mapped.1": "Q1A", ... }
+        q_row_idx = None
+
+        for idx in range(min(4, len(df))):
+            row = df.iloc[idx]
+            candidate = {}
+            for col_name in df.columns:
+                val = str(row[col_name]).strip()
+                if not val or val.upper() in ['USN', 'STUDENT NAME', 'SL NO', 'SLNO', 'NAN', '']:
+                    continue
+                for pattern in cls.Q_COLUMN_PATTERNS:
+                    if re.match(pattern, val, re.IGNORECASE):
+                        candidate[col_name] = val.upper()
+                        break
+            if len(candidate) >= 5:
+                q_row_idx = idx
+                rename_map = candidate
+                break
+
+        if not rename_map:
+            return df, []
+
+        df_fixed = df.rename(columns=rename_map)
+        # Remove all rows up to and including the Q-name row
+        df_fixed = df_fixed.iloc[q_row_idx + 1:].reset_index(drop=True)
+        q_columns = list(rename_map.values())  # ["Q1A", "Q1B", ...]
+        logger.info(f"Fixed multi-row header: renamed {len(rename_map)} columns, {len(df_fixed)} data rows remain")
+        return df_fixed, q_columns
+
     @classmethod
     def extract_q_columns(cls, df: pd.DataFrame) -> List[str]:
         """
@@ -222,6 +265,43 @@ class MarksheetParser:
 
         return df, q_columns, co_mappings, file_type, file_hash
     
+    @staticmethod
+    def group_q_columns_by_question_number(q_columns: List[str]) -> Dict[int, List[str]]:
+        """
+        Group sub-question columns by their parent question number.
+        e.g. ['Q1A', 'Q1B', 'Q2A', 'Q2B', 'Q3'] -> {1: ['Q1A', 'Q1B'], 2: ['Q2A', 'Q2B'], 3: ['Q3']}
+        Non-Q columns (AAT, QUIZ, lab cols) are grouped under key 0.
+        """
+        groups: Dict[int, List[str]] = {}
+        for col in q_columns:
+            match = re.match(r'^[Qq](\d+)', col.strip())
+            if match:
+                q_num = int(match.group(1))
+                groups.setdefault(q_num, []).append(col)
+            else:
+                groups.setdefault(0, []).append(col)
+        return groups
+
+    @staticmethod
+    def infer_max_marks_from_data(df: pd.DataFrame, q_columns: List[str]) -> Dict[str, float]:
+        """
+        Infer per-column max marks by scanning the data for each Q-column.
+        Returns {col_name: inferred_max_marks}.
+        Falls back to 10.0 if no valid numeric data found.
+        """
+        col_maxes: Dict[str, float] = {}
+        for col in q_columns:
+            if col not in df.columns:
+                col_maxes[col] = 10.0
+                continue
+            series = pd.to_numeric(df[col], errors='coerce').dropna()
+            if series.empty or series.max() == 0:
+                col_maxes[col] = 0.0
+            else:
+                import math
+                col_maxes[col] = math.ceil(series.max())
+        return col_maxes
+
     @staticmethod
     def extract_student_scores(
         df: pd.DataFrame,

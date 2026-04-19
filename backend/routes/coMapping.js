@@ -1,22 +1,26 @@
 import express from 'express';
 import multer from 'multer';
+import XLSX from 'xlsx';
 import { authenticateToken } from '../middleware/auth.js';
 import coMappingService from '../services/coMappingService.js';
 
 const router = express.Router();
 const authMiddleware = authenticateToken;
 
-// Configure multer for file upload (memory storage for CSV)
+// Accept CSV and Excel files
+const ACCEPTED_EXTENSIONS = ['.csv', '.xlsx', '.xls'];
 const upload = multer({
   storage: multer.memoryStorage(),
-  limits: {
-    fileSize: 5 * 1024 * 1024, // 5MB limit
-  },
+  limits: { fileSize: 10 * 1024 * 1024 },
   fileFilter: (req, file, cb) => {
-    if (file.mimetype === 'text/csv' || file.originalname.endsWith('.csv')) {
+    const ext = '.' + file.originalname.split('.').pop().toLowerCase();
+    if (ACCEPTED_EXTENSIONS.includes(ext) ||
+        file.mimetype === 'text/csv' ||
+        file.mimetype.includes('spreadsheet') ||
+        file.mimetype.includes('excel')) {
       cb(null, true);
     } else {
-      cb(new Error('Only CSV files are allowed'));
+      cb(new Error('Only CSV or Excel (.xlsx/.xls) files are accepted'));
     }
   }
 });
@@ -53,8 +57,16 @@ router.post('/upload', authMiddleware, upload.single('file'), async (req, res) =
 
     console.log(`📤 Uploading CO mapping: ${file.originalname} for marksheet ${marksheetId}`);
 
-    // Convert buffer to string
-    const csvContent = file.buffer.toString('utf-8');
+    // Convert file buffer to CSV text (handles both .csv and .xlsx/.xls)
+    let csvContent;
+    const ext = file.originalname.split('.').pop().toLowerCase();
+    if (ext === 'xlsx' || ext === 'xls') {
+      const wb = XLSX.read(file.buffer, { type: 'buffer' });
+      const ws = wb.Sheets[wb.SheetNames[0]];
+      csvContent = XLSX.utils.sheet_to_csv(ws);
+    } else {
+      csvContent = file.buffer.toString('utf-8');
+    }
 
     // Upload and parse CO mappings
     const result = await coMappingService.uploadCOMappings(
@@ -152,38 +164,51 @@ router.delete('/marksheet/:marksheetId', authMiddleware, async (req, res) => {
 });
 
 /**
- * GET /api/co-mapping/template
- * Download a template CO mapping CSV file
- * New format: Column, Max Marks, CO
+ * GET /api/co-mapping/template?type=cie   → CIE mapping template (Column, Max Marks, CO)
+ * GET /api/co-mapping/template?type=aat   → AAT/Quiz mapping template (transposed XLSX)
+ * GET /api/co-mapping/template            → defaults to AAT/Quiz template (matching mapping.xlsx)
  */
 router.get('/template', (req, res) => {
-  // Template shows the flexible A/B sub-question format.
-  // Rules:
-  //   • Each row maps ONE column to ONE CO with its max marks.
-  //   • A question can be a single column (q1a=10) or split into A+B sub-parts
-  //     with any mark split (6+4, 5+5, 4+6, etc.).
-  //   • Columns with Max Marks = 0 are skipped during calculation.
-  //   • Q1 / Q2 are compulsory; Q3/Q4, Q5/Q6, Q7/Q8 are optional pairs.
-  //   • Sub-question pairs are detected automatically — q3a and q3b both belong
-  //     to Q3, so ALL sub-parts of the student's chosen question are counted.
-  const template = `Column,Max Marks,CO
-q1a,6,co1
-q1b,4,co1
-q2a,10,co3
-q3a,5,co2
-q3b,5,co2
-q4a,6,co4
-q4b,4,co4
-q5a,10,co5
-q6a,5,co6
-q6b,5,co6
-q7a,10,co1
-q8a,5,co2
-q8b,5,co2`;
+  const type = (req.query.type || 'aat').toLowerCase();
 
-  res.setHeader('Content-Type', 'text/csv');
-  res.setHeader('Content-Disposition', 'attachment; filename="co-mapping-template.csv"');
-  res.send(template);
+  if (type === 'cie') {
+    // CIE mapping: Column, Max Marks, CO (CSV)
+    const template = `Column,Max Marks,CO
+q1a,6,CO1
+q1b,4,CO1
+q2a,10,CO3
+q3a,5,CO2
+q3b,5,CO2
+q4a,6,CO4
+q4b,4,CO4
+q5a,10,CO5
+q6a,5,CO6
+q6b,5,CO6
+q7a,10,CO1
+q8a,5,CO2
+q8b,5,CO2`;
+    res.setHeader('Content-Type', 'text/csv');
+    res.setHeader('Content-Disposition', 'attachment; filename="cie-co-mapping-template.csv"');
+    return res.send(template);
+  }
+
+  // AAT/Quiz template: transposed XLSX matching mapping.xlsx format
+  // Row 1 (headers): question names (aat, quiz)
+  // Row 2: CO label
+  // Row 3: comma-separated CO numbers per question
+  const wb = XLSX.utils.book_new();
+  const wsData = [
+    ['AAT', 'QUIZ'],
+    ['CO', 'CO'],
+    ['CO1,CO2,CO3,CO4', 'CO1,CO2,CO3,CO4']
+  ];
+  const ws = XLSX.utils.aoa_to_sheet(wsData);
+  XLSX.utils.book_append_sheet(wb, ws, 'CO Mapping');
+  const buf = XLSX.write(wb, { type: 'buffer', bookType: 'xlsx' });
+
+  res.setHeader('Content-Type', 'application/vnd.openxmlformats-officedocument.spreadsheetml.sheet');
+  res.setHeader('Content-Disposition', 'attachment; filename="aat-quiz-co-mapping-template.xlsx"');
+  res.send(buf);
 });
 
 export default router;

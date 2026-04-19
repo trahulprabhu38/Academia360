@@ -339,8 +339,8 @@ router.get('/course/:courseId/student/:studentId/performance', authenticateToken
 
         if (mappingsResult.rows.length === 0) continue;
 
-        // Get student's marks from the dynamic table
-        const questionColumns = mappingsResult.rows.map(m => `"${m.question_column.toUpperCase()}"`).join(', ');
+        // Get student's marks from the dynamic table (keep original case — columns were renamed to lowercase)
+        const questionColumns = mappingsResult.rows.map(m => `"${m.question_column}"`).join(', ');
 
         if (!questionColumns) continue;
 
@@ -369,7 +369,7 @@ router.get('/course/:courseId/student/:studentId/performance', authenticateToken
           const attemptedQuestions = detailedCalcService.getAttemptedQuestions(marksRow, questionNames);
 
           for (const mapping of mappingsResult.rows) {
-            const questionCol = mapping.question_column.toUpperCase();
+            const questionCol = mapping.question_column; // lowercase, matches renamed table column
             const rawMarks = marksRow[questionCol];
             const maxMarks = parseFloat(mapping.max_marks || 0);
 
