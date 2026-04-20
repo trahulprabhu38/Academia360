@@ -444,12 +444,54 @@ router.get('/course/:courseId/student/:studentId/performance', authenticateToken
       }
     }
 
-    // Get final CIE composition
+    // Get final CIE composition (pre-calculated)
     const finalCIEResult = await pool.query(`
       SELECT *
       FROM final_cie_composition
       WHERE course_id = $1 AND student_id = $2
     `, [courseId, studentId]);
+
+    // Always fetch per-assessment CIE marks from student_horizontal_analysis
+    // This is the authoritative source even when final_cie_composition is empty
+    const horizontalResult = await pool.query(`
+      SELECT sha.total_marks_raw, sha.scaled_marks, sha.percentage,
+             m.assessment_name, fls.assessment_type
+      FROM student_horizontal_analysis sha
+      JOIN marksheets m ON sha.marksheet_id = m.id
+      JOIN file_level_summary fls ON sha.marksheet_id = fls.marksheet_id
+      WHERE sha.course_id = $1 AND sha.student_id = $2
+      ORDER BY fls.assessment_type
+    `, [courseId, studentId]);
+
+    // Build cieMarks: always available if horizontal analysis has run
+    let cieMarks = finalCIEResult.rows[0] || null;
+
+    if (!cieMarks && horizontalResult.rows.length > 0) {
+      const byType = {};
+      for (const row of horizontalResult.rows) {
+        byType[row.assessment_type] = row;
+      }
+      const cie1 = parseFloat(byType['CIE1']?.scaled_marks) || 0;
+      const cie2 = parseFloat(byType['CIE2']?.scaled_marks) || 0;
+      const cie3 = parseFloat(byType['CIE3']?.scaled_marks) || 0;
+      const aat  = parseFloat(byType['AAT']?.total_marks_raw) || 0;
+      const quiz = parseFloat(byType['QUIZ']?.total_marks_raw) || 0;
+      // Average of whichever CIEs exist
+      const cieCount = [cie1, cie2, cie3].filter(v => v > 0).length || 1;
+      const avgCIE = Math.min((cie1 + cie2 + cie3) / cieCount, 30);
+      const total = avgCIE + aat + quiz;
+      cieMarks = {
+        scaled_cie1: cie1,
+        scaled_cie2: cie2,
+        scaled_cie3: cie3,
+        avg_cie_scaled: avgCIE,
+        aat_marks: aat,
+        quiz_marks: quiz,
+        final_cie_total: total,
+        final_cie_max: 50,
+        final_cie_percentage: (total / 50) * 100,
+      };
+    }
 
     // Calculate overall stats
     const overallStats = {
@@ -475,7 +517,7 @@ router.get('/course/:courseId/student/:studentId/performance', authenticateToken
       data: {
         student,
         coPerformance,
-        finalCIE: finalCIEResult.rows[0] || null,
+        finalCIE: cieMarks,
         overallStats
       }
     });

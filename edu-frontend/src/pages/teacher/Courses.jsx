@@ -10,6 +10,7 @@ import {
   BarChart3,
   Users,
   LayoutDashboard,
+  Filter,
 } from 'lucide-react';
 import toast from 'react-hot-toast';
 import { courseAPI } from '../../services/api';
@@ -28,6 +29,7 @@ const Courses = () => {
   const [editMode, setEditMode] = useState(false);
   const [selectedCourse, setSelectedCourse] = useState(null);
   const [menuAnchor, setMenuAnchor] = useState(null);
+  const [selectedSemester, setSelectedSemester] = useState('all');
   const [formData, setFormData] = useState({
     code: '',
     name: '',
@@ -133,6 +135,12 @@ const Courses = () => {
     setSelectedCourse(null);
   };
 
+  const availableSemesters = [...new Set(courses.map((c) => c.semester))].sort((a, b) => a - b);
+  const filteredCourses =
+    selectedSemester === 'all'
+      ? courses
+      : courses.filter((c) => String(c.semester) === String(selectedSemester));
+
   if (loading) {
     return (
       <div className="flex items-center justify-center min-h-[60vh]">
@@ -174,6 +182,35 @@ const Courses = () => {
           Create Course
         </Button>
       </div>
+
+      {/* Semester Filter */}
+      {courses.length > 0 && (
+        <div className="flex items-center gap-3">
+          <Filter className="w-4 h-4 text-neutral-500 dark:text-dark-text-secondary" />
+          <span className="text-sm font-medium text-neutral-600 dark:text-dark-text-secondary">Filter by Semester:</span>
+          <select
+            value={selectedSemester}
+            onChange={(e) => setSelectedSemester(e.target.value)}
+            className="text-sm rounded-lg border border-neutral-300 dark:border-dark-border bg-white dark:bg-dark-bg-secondary text-neutral-800 dark:text-dark-text-primary px-3 py-1.5 focus:outline-none focus:ring-2 focus:ring-primary-400 dark:focus:ring-dark-green-500 cursor-pointer"
+          >
+            <option value="all">All Semesters</option>
+            {availableSemesters.map((sem) => (
+              <option key={sem} value={sem}>
+                Semester {sem}
+              </option>
+            ))}
+          </select>
+          {selectedSemester !== 'all' && (
+            <button
+              onClick={() => setSelectedSemester('all')}
+              className="text-xs text-primary-600 dark:text-dark-green-500 hover:underline"
+            >
+              Clear
+            </button>
+          )}
+        </div>
+      )}
+
       {courses.length === 0 ? (
         <Card className="text-center py-12 bg-gradient-to-br from-neutral-50 to-neutral-100 dark:from-dark-bg-secondary dark:to-dark-bg-tertiary">
           <CardContent className="space-y-4">
@@ -194,9 +231,21 @@ const Courses = () => {
             </div>
           </CardContent>
         </Card>
+      ) : filteredCourses.length === 0 ? (
+        <div className="text-center py-12">
+          <p className="text-neutral-500 dark:text-dark-text-secondary text-lg font-medium">
+            No courses found for Semester {selectedSemester}
+          </p>
+          <button
+            onClick={() => setSelectedSemester('all')}
+            className="mt-3 text-sm text-primary-600 dark:text-dark-green-500 hover:underline"
+          >
+            Show all semesters
+          </button>
+        </div>
       ) : (
         <div className="grid grid-cols-1 md:grid-cols-2 lg:grid-cols-3 gap-4">
-          {courses.map((course, index) => {
+          {filteredCourses.map((course, index) => {
             const gradientColors = [
               'from-primary-500 to-primary-600 dark:from-dark-green-500 dark:to-dark-green-600',
               'from-secondary-500 to-secondary-600 dark:from-secondary-600 dark:to-secondary-700',
@@ -289,7 +338,7 @@ const Courses = () => {
             className="fixed z-50 bg-white dark:bg-dark-card rounded-lg shadow-lg border border-neutral-200 dark:border-dark-border overflow-hidden min-w-[180px]"
             style={{
               top: `${menuAnchor.getBoundingClientRect().bottom + 8}px`,
-              left: `${menuAnchor.getBoundingClientRect().left}px`,
+              right: `${window.innerWidth - menuAnchor.getBoundingClientRect().right}px`,
             }}
           >
             <button

@@ -493,6 +493,75 @@ const IndividualStudentAnalysis = ({ courseId }) => {
             )}
           </Grid>
 
+          {/* CIE Marks Breakdown Section */}
+          {studentData.finalCIE && (
+            <Accordion defaultExpanded sx={{ mb: 2, boxShadow: 1 }}>
+              <AccordionSummary
+                expandIcon={<ExpandMoreIcon />}
+                sx={{
+                  backgroundColor: '#f8f9fa',
+                  borderLeft: '4px solid #ff9800',
+                  '&:hover': { backgroundColor: '#f0f1f2' },
+                  '& .MuiAccordionSummary-content': { my: 1.5 }
+                }}
+              >
+                <Box display="flex" alignItems="center" gap={1.5}>
+                  <Calculate sx={{ color: '#ff9800', fontSize: 24 }} />
+                  <Typography variant="h6" fontWeight="600" color="text.primary">
+                    CIE Marks Breakdown
+                  </Typography>
+                </Box>
+              </AccordionSummary>
+              <AccordionDetails>
+                {(() => {
+                  const cie = studentData.finalCIE;
+                  const rows = [
+                    { label: 'CIE 1 (scaled to 30)', value: parseFloat(cie.scaled_cie1) || 0, max: 30 },
+                    { label: 'CIE 2 (scaled to 30)', value: parseFloat(cie.scaled_cie2) || 0, max: 30 },
+                    { label: 'CIE 3 (scaled to 30)', value: parseFloat(cie.scaled_cie3) || 0, max: 30 },
+                    { label: 'Average CIE (best 2 of 3 avg, out of 30)', value: parseFloat(cie.avg_cie_scaled) || 0, max: 30 },
+                    { label: 'AAT Marks', value: parseFloat(cie.aat_marks) || 0, max: 10 },
+                    { label: 'QUIZ Marks', value: parseFloat(cie.quiz_marks) || 0, max: 10 },
+                  ];
+                  const total = parseFloat(cie.final_cie_total) || 0;
+                  const totalMax = parseFloat(cie.final_cie_max) || 50;
+                  const totalPct = parseFloat(cie.final_cie_percentage) || 0;
+
+                  return (
+                    <TableContainer component={Paper} elevation={1}>
+                      <Table size="small">
+                        <TableHead>
+                          <TableRow sx={{ backgroundColor: '#fff3e0' }}>
+                            <TableCell><strong>Component</strong></TableCell>
+                            <TableCell align="right"><strong>Marks Obtained</strong></TableCell>
+                            <TableCell align="right"><strong>Max Marks</strong></TableCell>
+                            <TableCell align="right"><strong>Percentage</strong></TableCell>
+                          </TableRow>
+                        </TableHead>
+                        <TableBody>
+                          {rows.map((r) => (
+                            <TableRow key={r.label}>
+                              <TableCell>{r.label}</TableCell>
+                              <TableCell align="right">{r.value.toFixed(2)}</TableCell>
+                              <TableCell align="right">{r.max}</TableCell>
+                              <TableCell align="right">{r.max > 0 ? ((r.value / r.max) * 100).toFixed(1) : '0.0'}%</TableCell>
+                            </TableRow>
+                          ))}
+                          <TableRow sx={{ backgroundColor: '#fff8e1' }}>
+                            <TableCell><strong>Final CIE Total</strong></TableCell>
+                            <TableCell align="right"><strong>{total.toFixed(2)}</strong></TableCell>
+                            <TableCell align="right"><strong>{totalMax}</strong></TableCell>
+                            <TableCell align="right"><strong>{totalPct.toFixed(2)}%</strong></TableCell>
+                          </TableRow>
+                        </TableBody>
+                      </Table>
+                    </TableContainer>
+                  );
+                })()}
+              </AccordionDetails>
+            </Accordion>
+          )}
+
           {/* SEE Marks and Final Grade Section */}
           {(seeMarks || finalGrade) && (
             <Accordion defaultExpanded sx={{ mb: 2, boxShadow: 1 }}>
@@ -637,10 +706,8 @@ const IndividualStudentAnalysis = ({ courseId }) => {
           {/* Performance Insights Card */}
 
 
-          {/* Only show CO-dependent sections if COs are defined */}
-          {studentData.coPerformance && studentData.coPerformance.length > 0 && (
-            <>
-              {/* CIE Performance Summary */}
+          {/* Assessment (CIE) Summary: show whenever CIE data is available */}
+          {(studentData.finalCIE || (studentData.coPerformance && studentData.coPerformance.length > 0)) && (
               <Accordion sx={{ mb: 2, boxShadow: 1 }}>
                 <AccordionSummary
                   expandIcon={<ExpandMoreIcon />}
@@ -701,7 +768,7 @@ const IndividualStudentAnalysis = ({ courseId }) => {
 
               <Grid container spacing={2}>
                 {(() => {
-                  // Calculate CIE-wise performance
+                  // Calculate CIE-wise performance from CO-mapped questions
                   const ciePerformance = {};
 
                   studentData.coPerformance.forEach((co) => {
@@ -722,7 +789,42 @@ const IndividualStudentAnalysis = ({ courseId }) => {
                     });
                   });
 
-                  return Object.values(ciePerformance).map((cie) => {
+                  // Inject CIE1/2/3 from finalCIE if not already present via CO mappings
+                  if (studentData.finalCIE) {
+                    const fc = studentData.finalCIE;
+                    const cieSlots = [
+                      { key: 'CIE1', label: 'CIE 1', value: parseFloat(fc.scaled_cie1) || 0, max: 30 },
+                      { key: 'CIE2', label: 'CIE 2', value: parseFloat(fc.scaled_cie2) || 0, max: 30 },
+                      { key: 'CIE3', label: 'CIE 3', value: parseFloat(fc.scaled_cie3) || 0, max: 30 },
+                    ];
+                    for (const slot of cieSlots) {
+                      const alreadyPresent = Object.values(ciePerformance).some(
+                        (c) => c.type === slot.key || c.name.toUpperCase().includes(slot.key)
+                      );
+                      if (!alreadyPresent && slot.max > 0) {
+                        ciePerformance[slot.label] = {
+                          name: slot.label,
+                          type: slot.key,
+                          total_obtained: slot.value,
+                          total_max: slot.max,
+                          co_count: 0,
+                        };
+                      }
+                    }
+                  }
+
+                  // Sort: CIE1 → CIE2 → CIE3 → others
+                  const order = ['CIE1', 'CIE2', 'CIE3'];
+                  const sorted = Object.values(ciePerformance).sort((a, b) => {
+                    const ai = order.indexOf(a.type);
+                    const bi = order.indexOf(b.type);
+                    if (ai === -1 && bi === -1) return 0;
+                    if (ai === -1) return 1;
+                    if (bi === -1) return -1;
+                    return ai - bi;
+                  });
+
+                  return sorted.map((cie) => {
                     const percentage = cie.total_max > 0 ? (cie.total_obtained / cie.total_max) * 100 : 0;
                     const performanceColor = getPerformanceColor(percentage);
                     const performanceLabel = getPerformanceLabel(percentage);
@@ -853,21 +955,35 @@ const IndividualStudentAnalysis = ({ courseId }) => {
                       const cieData = {};
                       studentData.coPerformance.forEach((co) => {
                         co.assessments.forEach((assessment) => {
-                          if (!cieData[assessment.assessment_name]) {
-                            cieData[assessment.assessment_name] = {
-                              name: assessment.assessment_name,
+                          if (!cieData[assessment.assessment_type || assessment.assessment_name]) {
+                            cieData[assessment.assessment_type || assessment.assessment_name] = {
+                              name: assessment.assessment_type || assessment.assessment_name,
                               obtained: 0,
                               max: 0
                             };
                           }
-                          cieData[assessment.assessment_name].obtained += assessment.marks_obtained;
-                          cieData[assessment.assessment_name].max += assessment.max_marks;
+                          const key = assessment.assessment_type || assessment.assessment_name;
+                          cieData[key].obtained += assessment.marks_obtained;
+                          cieData[key].max += assessment.max_marks;
                         });
                       });
-                      return Object.values(cieData).map(cie => ({
-                        ...cie,
-                        percentage: cie.max > 0 ? (cie.obtained / cie.max) * 100 : 0
-                      }));
+                      // Inject CIE1/2/3 from finalCIE if missing
+                      if (studentData.finalCIE) {
+                        const fc = studentData.finalCIE;
+                        [['CIE1', fc.scaled_cie1], ['CIE2', fc.scaled_cie2], ['CIE3', fc.scaled_cie3]].forEach(([key, val]) => {
+                          if (!cieData[key]) {
+                            cieData[key] = { name: key, obtained: parseFloat(val) || 0, max: 30 };
+                          }
+                        });
+                      }
+                      const order = ['CIE1', 'CIE2', 'CIE3'];
+                      return Object.values(cieData)
+                        .map(cie => ({ ...cie, percentage: cie.max > 0 ? (cie.obtained / cie.max) * 100 : 0 }))
+                        .sort((a, b) => {
+                          const ai = order.indexOf(a.name), bi = order.indexOf(b.name);
+                          if (ai === -1 && bi === -1) return 0;
+                          return (ai === -1 ? 999 : ai) - (bi === -1 ? 999 : bi);
+                        });
                     })()}
                   >
                     <CartesianGrid strokeDasharray="3 3" />
@@ -886,7 +1002,11 @@ const IndividualStudentAnalysis = ({ courseId }) => {
               </Box>
                 </AccordionDetails>
               </Accordion>
+          )}
 
+          {/* CO-dependent sections */}
+          {studentData.coPerformance && studentData.coPerformance.length > 0 && (
+            <>
           {/* Charts Section */}
           <Accordion sx={{ mb: 2, boxShadow: 1 }}>
             <AccordionSummary

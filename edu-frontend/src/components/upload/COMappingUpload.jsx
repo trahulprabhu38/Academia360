@@ -320,65 +320,6 @@ const COMappingUpload = ({ courseId, marksheet }) => {
             </p>
           </div>
         )}
-
-        {/* Format hint */}
-        <div className="mt-4 p-4 bg-neutral-50 dark:bg-dark-bg-tertiary border border-neutral-200 dark:border-dark-border rounded-xl space-y-3">
-          <p className="text-xs font-semibold text-neutral-700 dark:text-dark-text-primary">
-            Accepted file formats: <span className="font-mono font-normal">.csv, .xlsx, .xls</span>
-          </p>
-
-          <div className="space-y-2 text-xs text-neutral-600 dark:text-dark-text-secondary">
-
-            {/* Option 1 */}
-            <div>
-              <p className="font-semibold text-neutral-700 dark:text-dark-text-primary mb-0.5">
-                Option 1 — Dedicated mapping file <span className="font-normal text-neutral-400">(recommended)</span>
-              </p>
-              <code className="block font-mono bg-neutral-100 dark:bg-dark-bg-secondary px-2 py-1.5 rounded text-[0.65rem] whitespace-pre leading-relaxed">
-{`Column,Max Marks,CO
-q1a,6,co1
-q1b,4,co1
-q2a,10,co3
-q3a,5,co2
-q3b,5,co2`}
-              </code>
-              <p className="mt-0.5 text-[0.65rem] text-neutral-400">
-                CO values accept <strong>CO1</strong>, <strong>co1</strong>, or plain <strong>1</strong>. Max Marks column is optional (defaults to 10).
-              </p>
-            </div>
-
-            {/* Option 2 */}
-            <div>
-              <p className="font-semibold text-neutral-700 dark:text-dark-text-primary mb-0.5">
-                Option 2 — Same CIE marks file you already uploaded
-              </p>
-              <p className="text-[0.65rem] text-neutral-400">
-                The parser automatically extracts CO mappings from the multi-row header
-                (the rows that list CO1, CO2… above the Q1A, Q1B… question names).
-                Just upload the same file you used for marks — no separate mapping file needed.
-              </p>
-            </div>
-
-            {/* Option 3 */}
-            <div>
-              <p className="font-semibold text-neutral-700 dark:text-dark-text-primary mb-0.5">
-                Option 3 — Transposed format <span className="font-normal text-neutral-400">(for AAT / Quiz)</span>
-              </p>
-              <code className="block font-mono bg-neutral-100 dark:bg-dark-bg-secondary px-2 py-1.5 rounded text-[0.65rem] whitespace-pre leading-relaxed">
-{`AAT,QUIZ
-CO,CO
-CO1,CO2,CO3,CO4,CO1,CO2,CO3,CO4`}
-              </code>
-              <p className="mt-0.5 text-[0.65rem] text-neutral-400">
-                Headers = question names (AAT, QUIZ). Row 2 = "CO" label. Row 3 = comma-separated CO numbers mapped to each column. Download the AAT/Quiz template (.xlsx) for the exact format.
-              </p>
-            </div>
-          </div>
-
-          <p className="text-[0.65rem] text-neutral-500 dark:text-dark-text-muted border-t border-neutral-200 dark:border-dark-border pt-2">
-            Q1 &amp; Q2 are always compulsory. Q3/Q4, Q5/Q6, Q7/Q8 are optional pairs — sub-parts are grouped automatically.
-          </p>
-        </div>
       </CardContent>
     </Card>
   );
