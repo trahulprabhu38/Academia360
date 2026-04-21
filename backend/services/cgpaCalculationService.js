@@ -300,6 +300,84 @@ class CGPACalculationService {
   }
 
   /**
+   * Calculate SGPA from semester_subjects table (manually added subjects)
+   * Used when subjects are added via SemesterSubjectManager, not students_courses
+   */
+  async calculateSGPAFromSubjects(studentId, semester) {
+    const client = await pool.connect();
+    try {
+      console.log(`\n=== CALCULATING SGPA FROM SUBJECTS (sem ${semester}) ===`);
+
+      const result = await client.query(`
+        SELECT credits, grade_point, is_passed, academic_year
+        FROM semester_subjects
+        WHERE student_id = $1 AND semester = $2
+      `, [studentId, semester]);
+
+      const subjects = result.rows;
+      if (subjects.length === 0) {
+        throw new Error(`No subjects found in semester_subjects for semester ${semester}`);
+      }
+
+      let totalCreditsRegistered = 0;
+      let totalCreditsEarned = 0;
+      let totalGradePoints = 0;
+      let coursesPassed = 0;
+      let coursesFailed = 0;
+
+      for (const sub of subjects) {
+        const credits = parseInt(sub.credits) || 3;
+        totalCreditsRegistered += credits;
+        if (sub.grade_point !== null) {
+          const gp = parseFloat(sub.grade_point);
+          totalGradePoints += gp * credits;
+          if (sub.is_passed) { totalCreditsEarned += credits; coursesPassed++; }
+          else coursesFailed++;
+        }
+      }
+
+      const sgpa = totalCreditsRegistered > 0 ? totalGradePoints / totalCreditsRegistered : 0;
+      const academicYear = subjects[0].academic_year;
+      const semesterStatus = coursesFailed > 0 ? 'detained'
+        : coursesPassed < subjects.length ? 'in_progress' : 'completed';
+
+      const upsertQuery = `
+        INSERT INTO semester_results (
+          student_id, semester, academic_year,
+          total_credits_registered, total_credits_earned, total_grade_points, sgpa,
+          courses_registered, courses_passed, courses_failed, semester_status, result_date
+        ) VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11,CURRENT_TIMESTAMP)
+        ON CONFLICT (student_id, semester, academic_year) DO UPDATE SET
+          total_credits_registered = EXCLUDED.total_credits_registered,
+          total_credits_earned     = EXCLUDED.total_credits_earned,
+          total_grade_points       = EXCLUDED.total_grade_points,
+          sgpa                     = EXCLUDED.sgpa,
+          courses_registered       = EXCLUDED.courses_registered,
+          courses_passed           = EXCLUDED.courses_passed,
+          courses_failed           = EXCLUDED.courses_failed,
+          semester_status          = EXCLUDED.semester_status,
+          result_date              = CURRENT_TIMESTAMP,
+          updated_at               = CURRENT_TIMESTAMP
+        RETURNING *
+      `;
+
+      const res = await client.query(upsertQuery, [
+        studentId, semester, academicYear,
+        totalCreditsRegistered, totalCreditsEarned, totalGradePoints, sgpa,
+        subjects.length, coursesPassed, coursesFailed, semesterStatus
+      ]);
+
+      console.log(`✅ SGPA from subjects: ${sgpa.toFixed(2)} for semester ${semester}`);
+      return res.rows[0];
+    } catch (error) {
+      console.error('Error in calculateSGPAFromSubjects:', error);
+      throw error;
+    } finally {
+      client.release();
+    }
+  }
+
+  /**
    * Get CGPA data for a student
    * @param {UUID} studentId - Student ID
    * @returns {Object} CGPA data or null

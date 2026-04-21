@@ -114,12 +114,6 @@ export default function AttainmentDashboard() {
               Manage CES
             </Button>
           </Link>
-          <Link to={`/teacher/courses/${courseId}/see-mapping`}>
-            <Button variant="outline" size="sm">
-              <FileQuestion className="w-4 h-4 mr-2" />
-              SEE Mapping
-            </Button>
-          </Link>
           <Button onClick={handleRecalculate} disabled={recalculating} size="sm"
             className="bg-gradient-to-r from-primary-500 to-secondary-500 text-white border-0">
             <RefreshCw className={`w-4 h-4 mr-2 ${recalculating ? 'animate-spin' : ''}`} />

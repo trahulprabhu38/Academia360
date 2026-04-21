@@ -207,14 +207,14 @@ router.post('/students/:studentId/semester/:semester', authenticateToken, author
 
     const newSubject = result.rows[0];
 
-    // Recalculate SGPA if credits = 20
-    if (newTotal === 20) {
+    // Recalculate SGPA whenever grades are present (not just at 20 credits)
+    if (gradePointValue !== null) {
       try {
-        await cgpaCalculationService.calculateSGPA(studentId, semesterNum, academic_year || new Date().getFullYear());
-        console.log(`✅ SGPA calculated for semester ${semesterNum}`);
+        await cgpaCalculationService.calculateSGPAFromSubjects(studentId, semesterNum);
+        await cgpaCalculationService.calculateCGPA(studentId);
+        console.log(`✅ SGPA/CGPA recalculated for semester ${semesterNum}`);
       } catch (sgpaError) {
-        console.error('Failed to calculate SGPA:', sgpaError);
-        // Don't fail the request, just log the error
+        console.error('Failed to calculate SGPA from subjects:', sgpaError.message);
       }
     }
 
@@ -364,13 +364,14 @@ router.put('/:subjectId', authenticateToken, authorizeRoles('teacher', 'admin'),
     );
     const totalCredits = parseInt(totalCheck.rows[0].total_credits);
 
-    // Recalculate SGPA if credits = 20
-    if (totalCredits === 20) {
+    // Recalculate SGPA/CGPA whenever a grade is present
+    if (gradePointValue !== null) {
       try {
-        await cgpaCalculationService.calculateSGPA(studentId, semester, currentSubject.academic_year);
-        console.log(`✅ SGPA recalculated for semester ${semester}`);
+        await cgpaCalculationService.calculateSGPAFromSubjects(studentId, semester);
+        await cgpaCalculationService.calculateCGPA(studentId);
+        console.log(`✅ SGPA/CGPA recalculated for semester ${semester}`);
       } catch (sgpaError) {
-        console.error('Failed to recalculate SGPA:', sgpaError);
+        console.error('Failed to recalculate SGPA from subjects:', sgpaError.message);
       }
     }
 

@@ -1,67 +1,28 @@
 import React from 'react';
-import { Chip } from '@mui/material';
 
-/**
- * GradeBadge Component
- * Displays a color-coded badge for letter grades
- */
+const GRADE_COLORS = {
+  'S':  { bg: 'bg-emerald-600',  text: 'text-white' },
+  'A+': { bg: 'bg-green-600',    text: 'text-white' },
+  'A':  { bg: 'bg-green-500',    text: 'text-white' },
+  'B+': { bg: 'bg-lime-500',     text: 'text-white' },
+  'B':  { bg: 'bg-yellow-400',   text: 'text-black' },
+  'C+': { bg: 'bg-yellow-300',   text: 'text-black' },
+  'C':  { bg: 'bg-amber-400',    text: 'text-black' },
+  'D':  { bg: 'bg-orange-500',   text: 'text-white' },
+  'E':  { bg: 'bg-orange-600',   text: 'text-white' },
+  'P':  { bg: 'bg-blue-500',     text: 'text-white' },
+  'F':  { bg: 'bg-red-600',      text: 'text-white' },
+};
+
 const GradeBadge = ({ grade, size = 'medium', showPoints = false, gradePoints = null }) => {
-  const getGradeColor = (grade) => {
-    switch (grade) {
-      case 'A+':
-        return { bg: '#2e7d32', text: '#fff' }; // Dark Green
-      case 'A':
-        return { bg: '#43a047', text: '#fff' }; // Green
-      case 'B+':
-        return { bg: '#7cb342', text: '#fff' }; // Light Green
-      case 'B':
-        return { bg: '#c0ca33', text: '#000' }; // Lime
-      case 'C+':
-        return { bg: '#fdd835', text: '#000' }; // Yellow
-      case 'C':
-        return { bg: '#ffb300', text: '#000' }; // Amber
-      case 'D':
-        return { bg: '#fb8c00', text: '#fff' }; // Orange
-      case 'E':
-        return { bg: '#f4511e', text: '#fff' }; // Deep Orange
-      case 'F':
-        return { bg: '#e53935', text: '#fff' }; // Red
-      default:
-        return { bg: '#9e9e9e', text: '#fff' }; // Grey
-    }
-  };
-
-  if (!grade) {
-    return (
-      <Chip
-        label="N/A"
-        size={size}
-        sx={{
-          bgcolor: '#e0e0e0',
-          color: '#757575',
-          fontWeight: 'bold'
-        }}
-      />
-    );
-  }
-
-  const colors = getGradeColor(grade);
-  const label = showPoints && gradePoints !== null
-    ? `${grade} (${gradePoints})`
-    : grade;
+  const colors = GRADE_COLORS[grade] || { bg: 'bg-neutral-400', text: 'text-white' };
+  const label = showPoints && gradePoints !== null ? `${grade} (${gradePoints})` : (grade || 'N/A');
+  const sizeClass = size === 'small' ? 'text-xs px-2 py-0.5 min-w-[36px]' : 'text-sm px-2.5 py-1 min-w-[44px]';
 
   return (
-    <Chip
-      label={label}
-      size={size}
-      sx={{
-        bgcolor: colors.bg,
-        color: colors.text,
-        fontWeight: 'bold',
-        fontSize: size === 'small' ? '0.75rem' : '0.875rem',
-        minWidth: size === 'small' ? '45px' : '60px'
-      }}
-    />
+    <span className={`inline-flex items-center justify-center rounded-md font-bold ${sizeClass} ${colors.bg} ${colors.text}`}>
+      {label}
+    </span>
   );
 };
 

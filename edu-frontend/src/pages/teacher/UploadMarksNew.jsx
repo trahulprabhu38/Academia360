@@ -24,24 +24,20 @@ const THEORY_SLOTS = [
   { id: "cia3",  label: "CIA 3",      hint: "Continuous Internal Assessment 3", color: "blue",   defaultName: "CIA 3"    },
   { id: "aat",   label: "AAT / Quiz", hint: "Additional Assessment Task",        color: "purple", defaultName: "AAT Quiz" },
 ];
-const LAB_SLOTS = [
-  { id: "labcia1", label: "Lab CIA 1", hint: "Lab Continuous Internal Exam 1",  color: "green",  defaultName: "Lab CIA 1" },
-  { id: "labcia2", label: "Lab CIA 2", hint: "Lab Continuous Internal Exam 2",  color: "green",  defaultName: "Lab CIA 2" },
-  { id: "labia",   label: "Lab IA",   hint: "Lab Internal Assessment (Test)",   color: "green",  defaultName: "Lab IA"    },
-];
-const ALL_SLOTS = [...THEORY_SLOTS, ...LAB_SLOTS];
+const ALL_SLOTS = [...THEORY_SLOTS];
 
 function getSections(courseType) {
   if (courseType === "IPCC") return [
-    { title: "Theory Components",     icon: BookOpen,     slots: THEORY_SLOTS },
-    { title: "Lab Components (IPCC)", icon: FlaskConical, slots: LAB_SLOTS   },
-  ];
-  if (courseType === "STANDALONE_LAB") return [
-    { title: "Lab Components",        icon: FlaskConical, slots: LAB_SLOTS   },
+    { title: "Theory Components", icon: BookOpen, slots: THEORY_SLOTS },
   ];
   return [
-    { title: "Theory Components",     icon: BookOpen,     slots: THEORY_SLOTS },
+    { title: "Theory Components", icon: BookOpen, slots: THEORY_SLOTS },
   ];
+}
+
+// Whether this course needs a Lab SCE upload
+function needsLabSCE(courseType, credits) {
+  return courseType === "IPCC" || courseType === "STANDALONE_LAB" || credits <= 2;
 }
 
 // ── Slot detection: exact normalized match ────────────────────────────────────
@@ -350,6 +346,136 @@ function UploadSlot({ slot, courseId, uploadedSlotIds, onUploaded }) {
   );
 }
 
+// ── Lab SCE Upload Slot ───────────────────────────────────────────────────────
+// Accepts USN + final marks (out of 50). Backend scales to 20.
+function LabSCEUploadSlot({ courseId, hasLabUploaded, onUploaded }) {
+  const [file, setFile]         = useState(null);
+  const [uploading, setUploading] = useState(false);
+  const [result, setResult]     = useState(null);
+  const fileRef = useRef(null);
+
+  const downloadTemplate = () => {
+    const ws = XLSX.utils.json_to_sheet([
+      { USN: "1MS22CS001", Final_Marks: 45 },
+      { USN: "1MS22CS002", Final_Marks: 38 },
+    ]);
+    ws["!cols"] = [{ wch: 15 }, { wch: 14 }];
+    const wb = XLSX.utils.book_new();
+    XLSX.utils.book_append_sheet(wb, ws, "Lab SCE Template");
+    XLSX.writeFile(wb, "Lab_SCE_Template.xlsx");
+  };
+
+  const handleUpload = async () => {
+    if (!file) { toast.error("Please select a file"); return; }
+    setUploading(true);
+    try {
+      const buffer = await file.arrayBuffer();
+      const wb = XLSX.read(buffer, { type: "array" });
+      const ws = wb.Sheets[wb.SheetNames[0]];
+      const rows = XLSX.utils.sheet_to_json(ws);
+      const marksData = rows
+        .map(r => ({
+          usn: (r.USN || r.usn || "").toString().trim(),
+          marks: parseFloat(r.Final_Marks ?? r.final_marks ?? r.Marks ?? r.marks ?? NaN),
+        }))
+        .filter(r => r.usn && !isNaN(r.marks));
+
+      if (marksData.length === 0) {
+        toast.error("No valid rows. Ensure columns USN and Final_Marks exist.");
+        return;
+      }
+      const token = localStorage.getItem("token");
+      const resp = await axios.post(
+        `${API_BASE}/lab-marks/courses/${courseId}/upload`,
+        { marksData },
+        { headers: { Authorization: `Bearer ${token}` } }
+      );
+      const data = resp.data.data || resp.data;
+      setResult(data);
+      toast.success(`Lab SCE: ${data.uploaded ?? 0} uploaded, ${data.updated ?? 0} updated`);
+      onUploaded?.();
+    } catch (err) {
+      toast.error(err.response?.data?.message || err.message || "Lab upload failed");
+    } finally {
+      setUploading(false);
+    }
+  };
+
+  const isUploaded = result !== null || hasLabUploaded;
+
+  return (
+    <motion.div
+      layout
+      className={`rounded-2xl border-2 overflow-hidden bg-white dark:bg-dark-bg-secondary transition-colors duration-300
+        ${isUploaded ? "border-green-400 dark:border-green-600" : "border-green-200 dark:border-green-900"}`}
+    >
+      <div className="flex items-center gap-3 px-4 py-3 bg-green-50 dark:bg-green-950/30">
+        {isUploaded
+          ? <CheckCircle className="w-5 h-5 text-green-500 shrink-0" />
+          : <Circle className="w-5 h-5 text-neutral-300 dark:text-neutral-600 shrink-0" />}
+        <div className="flex-1">
+          <p className={`font-semibold text-sm ${isUploaded ? "text-green-700 dark:text-green-400" : "text-neutral-800 dark:text-dark-text-primary"}`}>
+            Lab SCE (Final Marks)
+          </p>
+          <p className="text-[11px] text-neutral-400">Out of 50 — auto-scaled to 20 for CIE</p>
+        </div>
+        {isUploaded && (
+          <span className="shrink-0 text-[10px] font-bold px-2 py-0.5 rounded-full bg-green-100 dark:bg-green-900/40 text-green-700 dark:text-green-300">
+            Uploaded
+          </span>
+        )}
+      </div>
+
+      <AnimatePresence mode="wait">
+        {isUploaded ? (
+          <motion.div key="success" initial={{ opacity: 0, y: 8 }} animate={{ opacity: 1, y: 0 }} exit={{ opacity: 0 }} className="p-4 space-y-3">
+            <div className="flex items-center gap-2 text-green-600 dark:text-green-400">
+              <CheckCircle className="w-4 h-4" />
+              <span className="text-sm font-medium">Lab SCE marks loaded</span>
+            </div>
+            {result && (
+              <div className="grid grid-cols-3 gap-2">
+                <StatChip icon={Users}     label="Uploaded" value={result.uploaded} color="green" />
+                <StatChip icon={RefreshCw} label="Updated"  value={result.updated}  color="blue"  />
+                <StatChip icon={AlertCircle} label="Failed" value={result.failed}   color="amber" />
+              </div>
+            )}
+            <button className="text-xs text-neutral-400 hover:text-neutral-600 dark:hover:text-neutral-300 underline underline-offset-2"
+              onClick={() => { setResult(null); setFile(null); }}>Re-upload</button>
+          </motion.div>
+        ) : (
+          <motion.div key="form" initial={{ opacity: 0, y: 8 }} animate={{ opacity: 1, y: 0 }} exit={{ opacity: 0 }} className="p-4 space-y-3">
+            <p className="text-xs text-green-800 dark:text-green-300">
+              Upload Excel/CSV with columns <strong>USN</strong> and <strong>Final_Marks</strong> (0–50).
+              Marks will be converted to out of 20 automatically.
+            </p>
+            <div className="flex gap-2 flex-wrap">
+              <Button variant="outline" size="sm" onClick={downloadTemplate}>
+                <Download className="w-3.5 h-3.5 mr-1" /> Template
+              </Button>
+              <Button size="sm" variant="outline" onClick={() => fileRef.current?.click()} disabled={uploading}
+                className="text-green-700 border-green-300">
+                <FileText className="w-3.5 h-3.5 mr-1" />
+                {file ? file.name : "Choose File"}
+              </Button>
+              <input ref={fileRef} type="file" accept=".xlsx,.xls,.csv" className="hidden"
+                onChange={e => { if (e.target.files[0]) setFile(e.target.files[0]); e.target.value = ""; }} />
+              {file && !uploading && (
+                <button onClick={() => setFile(null)} className="text-xs text-neutral-400 hover:text-neutral-600 dark:hover:text-neutral-300"><X className="w-4 h-4" /></button>
+              )}
+            </div>
+            {file && (
+              <Button size="sm" onClick={handleUpload} disabled={uploading}>
+                {uploading ? <><Loader2 className="w-4 h-4 mr-1.5 animate-spin" />Uploading…</> : <><CloudUpload className="w-4 h-4 mr-1.5" />Upload Lab SCE</>}
+              </Button>
+            )}
+          </motion.div>
+        )}
+      </AnimatePresence>
+    </motion.div>
+  );
+}
+
 // ── SEE Upload Slot ───────────────────────────────────────────────────────────
 function SEEUploadSlot({ courseId, hasSEEUploaded, onUploaded }) {
   const [file, setFile]       = useState(null);
@@ -540,6 +666,7 @@ const UploadMarksNew = () => {
   const [uploadedSlotIds, setUploadedSlotIds] = useState(new Set());
   const [localUploaded, setLocalUploaded] = useState(new Set());   // uploaded this session
   const [hasSEEUploaded, setSEEUploaded]  = useState(false);
+  const [hasLabUploaded, setLabUploaded]  = useState(false);
   const [refreshing, setRefreshing]       = useState(false);
 
   useEffect(() => { loadCourses(); }, []);
@@ -571,6 +698,13 @@ const UploadMarksNew = () => {
       });
       setSEEUploaded((seeRes.data.data?.totalUploaded ?? 0) > 0);
     } catch { /* ignore */ }
+    try {
+      const token  = localStorage.getItem("token");
+      const labRes = await axios.get(`${API_BASE}/lab-marks/courses/${courseId}/status`, {
+        headers: { Authorization: `Bearer ${token}` },
+      });
+      setLabUploaded((labRes.data.data?.totalUploaded ?? 0) > 0);
+    } catch { /* ignore */ }
   }, []);
 
   const handleCourseChange = async (courseId) => {
@@ -578,6 +712,7 @@ const UploadMarksNew = () => {
     setUploadedSlotIds(new Set());
     setLocalUploaded(new Set());
     setSEEUploaded(false);
+    setLabUploaded(false);
     if (!courseId) { setCourseObj(null); return; }
     try {
       const res = await courseAPI.getById(courseId);
@@ -760,7 +895,30 @@ const UploadMarksNew = () => {
                 animate={{ opacity: 1, y: 0 }}
                 transition={{ delay: sections.length * 0.07 }}
               >
-                <div className="flex items-center gap-2 mb-2">
+                {/* Lab SCE — shown for IPCC and standalone/low-credit lab courses */}
+                {needsLabSCE(selectedCourseObj?.course_type, selectedCourseObj?.credits) && (
+                  <>
+                    <div className="flex items-center gap-2 mb-2 mt-6">
+                      <FlaskConical className="w-4 h-4 text-green-500 dark:text-green-400" />
+                      <h3 className="text-sm font-bold text-green-600 dark:text-green-400 uppercase tracking-wider">
+                        Lab SCE (Final Marks)
+                      </h3>
+                      <div className="flex-1 h-px bg-neutral-200 dark:bg-dark-border" />
+                    </div>
+                    <p className="text-xs text-neutral-500 dark:text-neutral-400 mb-2">
+                      {selectedCourseObj?.course_type === 'IPCC'
+                        ? 'IPCC: Lab marks (out of 50) are scaled to 20 and added to theory CIE (30) = 50 total CIE.'
+                        : 'Standalone lab: Upload final lab marks (out of 50) scaled to 20.'}
+                    </p>
+                    <LabSCEUploadSlot
+                      courseId={selectedCourse}
+                      hasLabUploaded={hasLabUploaded}
+                      onUploaded={() => setLabUploaded(true)}
+                    />
+                  </>
+                )}
+
+                <div className="flex items-center gap-2 mb-2 mt-6">
                   <FileText className="w-4 h-4 text-neutral-500 dark:text-dark-text-muted" />
                   <h3 className="text-sm font-bold text-neutral-500 dark:text-dark-text-muted uppercase tracking-wider">
                     Semester End Exam (SEE)

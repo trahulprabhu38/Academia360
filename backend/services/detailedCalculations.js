@@ -1129,6 +1129,12 @@ class DetailedCalculationsService {
   async calculateFinalCIEComposition(courseId) {
     console.log(`\n=== FINAL CIE COMPOSITION for course ${courseId} ===`);
 
+    // Determine course type
+    const courseTypeRes = await pool.query('SELECT course_type FROM courses WHERE id = $1', [courseId]);
+    const courseType = courseTypeRes.rows[0]?.course_type || 'STANDALONE_THEORY';
+    const isIPCC = courseType === 'IPCC';
+    console.log(`Course type: ${courseType}`);
+
     // Get all students enrolled in the course
     const studentsQuery = await pool.query(`
       SELECT DISTINCT u.id, u.usn, u.name
@@ -1140,24 +1146,53 @@ class DetailedCalculationsService {
 
     console.log(`Found ${studentsQuery.rows.length} students enrolled in course`);
 
-    // Get AAT/QUIZ marksheet to extract AAT and QUIZ separately
-    const aatMarksheetQuery = await pool.query(`
-      SELECT id, table_name, columns
-      FROM marksheets
-      WHERE course_id = $1 AND (
-        assessment_name ILIKE '%AAT%' OR
-        assessment_name ILIKE '%QUIZ%'
-      )
-      LIMIT 1
-    `, [courseId]);
+    // For non-IPCC: get AAT/QUIZ marksheet
+    let aatTableName = null, aatColName = null, quizColName = null;
+    if (!isIPCC) {
+      const aatMarksheetQuery = await pool.query(`
+        SELECT id, table_name, columns
+        FROM marksheets
+        WHERE course_id = $1 AND (
+          assessment_name ILIKE '%AAT%' OR
+          assessment_name ILIKE '%QUIZ%'
+        )
+        LIMIT 1
+      `, [courseId]);
+      const aatMarksheetRow = aatMarksheetQuery.rows[0];
+      aatTableName  = aatMarksheetRow?.table_name;
+      const aatTableColumns = aatMarksheetRow?.columns || [];
+      aatColName  = aatTableColumns.find(c => c.toLowerCase() === 'aat');
+      quizColName = aatTableColumns.find(c => c.toLowerCase() === 'quiz');
+      console.log(`AAT table: ${aatTableName || 'NOT FOUND'}, AAT col: ${aatColName}, QUIZ col: ${quizColName}`);
+    }
 
-    const aatMarksheetRow  = aatMarksheetQuery.rows[0];
-    const aatTableName     = aatMarksheetRow?.table_name;
-    const aatTableColumns  = aatMarksheetRow?.columns || [];
-    // Find actual column names case-insensitively
-    const aatColName  = aatTableColumns.find(c => c.toLowerCase() === 'aat');
-    const quizColName = aatTableColumns.find(c => c.toLowerCase() === 'quiz');
-    console.log(`AAT table: ${aatTableName || 'NOT FOUND'}, AAT col: ${aatColName}, QUIZ col: ${quizColName}`);
+    // For IPCC: pre-load lab marks keyed by USN
+    const labMarksByUSN = {};
+    if (isIPCC) {
+      try {
+        await pool.query(`
+          CREATE TABLE IF NOT EXISTS ipcc_lab_marks (
+            id UUID PRIMARY KEY DEFAULT gen_random_uuid(),
+            course_id UUID NOT NULL, student_id UUID, usn VARCHAR(20) NOT NULL,
+            raw_marks NUMERIC(6,2) NOT NULL DEFAULT 0,
+            scaled_marks NUMERIC(6,2) NOT NULL DEFAULT 0,
+            created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
+            updated_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
+            UNIQUE(course_id, usn)
+          )
+        `);
+        const labRes = await pool.query(
+          'SELECT usn, scaled_marks FROM ipcc_lab_marks WHERE course_id = $1',
+          [courseId]
+        );
+        for (const r of labRes.rows) {
+          labMarksByUSN[r.usn.toUpperCase()] = parseFloat(r.scaled_marks) || 0;
+        }
+        console.log(`IPCC lab marks loaded for ${labRes.rows.length} students`);
+      } catch (e) {
+        console.warn('Could not load IPCC lab marks:', e.message);
+      }
+    }
 
     const finalResults = [];
 
@@ -1188,42 +1223,43 @@ class DetailedCalculationsService {
 
       // Average of scaled CIE marks (each already scaled to 30)
       const avgCIEScaled = (scaledCIE1 + scaledCIE2 + scaledCIE3) / 3;
+      const cappedAvgCIE = Math.min(avgCIEScaled, 30);
 
-      // Get AAT and QUIZ directly from the AAT table
       let aatMarks = 0;
       let quizMarks = 0;
+      let labScaledMarks = 0;
 
-      if (aatTableName && (aatColName || quizColName)) {
-        try {
-          const selectCols = [aatColName, quizColName].filter(Boolean).map(c => `"${c}"`).join(', ');
-          const aatQuizQuery = await pool.query(
-            `SELECT ${selectCols} FROM "${aatTableName}" WHERE UPPER("USN") = UPPER($1) LIMIT 1`,
-            [usn]
-          );
-
-          if (aatQuizQuery.rows.length > 0) {
-            const row = aatQuizQuery.rows[0];
-            const aatVal  = aatColName  ? row[aatColName]  : null;
-            const quizVal = quizColName ? row[quizColName] : null;
-
-            if (aatVal && aatVal !== 'NaN' && aatVal !== 'nan') {
-              aatMarks = Math.min(parseFloat(aatVal) || 0, 10);
+      if (isIPCC) {
+        // IPCC: Final CIE = Theory avg (30) + Lab SCE scaled to 20 = 50
+        labScaledMarks = Math.min(labMarksByUSN[usn.toUpperCase()] || 0, 20);
+      } else {
+        // Theory-only: Final CIE = avg CIE (30) + AAT (10) + QUIZ (10) = 50
+        if (aatTableName && (aatColName || quizColName)) {
+          try {
+            const selectCols = [aatColName, quizColName].filter(Boolean).map(c => `"${c}"`).join(', ');
+            const aatQuizQuery = await pool.query(
+              `SELECT ${selectCols} FROM "${aatTableName}" WHERE UPPER("USN") = UPPER($1) LIMIT 1`,
+              [usn]
+            );
+            if (aatQuizQuery.rows.length > 0) {
+              const row = aatQuizQuery.rows[0];
+              const aatVal  = aatColName  ? row[aatColName]  : null;
+              const quizVal = quizColName ? row[quizColName] : null;
+              if (aatVal  && aatVal  !== 'NaN' && aatVal  !== 'nan') aatMarks  = Math.min(parseFloat(aatVal)  || 0, 10);
+              if (quizVal && quizVal !== 'NaN' && quizVal !== 'nan') quizMarks = Math.min(parseFloat(quizVal) || 0, 10);
             }
-            if (quizVal && quizVal !== 'NaN' && quizVal !== 'nan') {
-              quizMarks = Math.min(parseFloat(quizVal) || 0, 10);
-            }
+          } catch (aatErr) {
+            console.warn(`  ⚠️ Could not fetch AAT/QUIZ for ${usn}: ${aatErr.message} — using 0`);
           }
-        } catch (aatErr) {
-          console.warn(`  ⚠️ Could not fetch AAT/QUIZ for ${usn}: ${aatErr.message} — using 0`);
         }
       }
 
-      // Ensure avgCIEScaled is capped at 30
-      const cappedAvgCIE = Math.min(avgCIEScaled, 30);
-
-      // Final CIE total = avg(CIE1, CIE2, CIE3) + AAT + QUIZ
-      // Max = 30 (avg CIE) + 10 (AAT) + 10 (QUIZ) = 50
-      const finalCIETotal = cappedAvgCIE + aatMarks + quizMarks;
+      // Final CIE total
+      // IPCC:   theory(30) + lab(20)        = 50
+      // Theory: avgCIE(30) + aat(10)+quiz(10) = 50
+      const finalCIETotal = isIPCC
+        ? cappedAvgCIE + labScaledMarks
+        : cappedAvgCIE + aatMarks + quizMarks;
       const finalCIEMax = 50;
       const finalCIEPercentage = (finalCIETotal / finalCIEMax) * 100;
 
@@ -1232,12 +1268,14 @@ class DetailedCalculationsService {
         studentId,
         usn,
         studentName,
-        scaledCIE1: Math.min(scaledCIE1, 30), // Cap at 30
-        scaledCIE2: Math.min(scaledCIE2, 30), // Cap at 30
-        scaledCIE3: Math.min(scaledCIE3, 30), // Cap at 30
+        scaledCIE1: Math.min(scaledCIE1, 30),
+        scaledCIE2: Math.min(scaledCIE2, 30),
+        scaledCIE3: Math.min(scaledCIE3, 30),
         avgCIEScaled: cappedAvgCIE,
-        aatMarks,
-        quizMarks,
+        // For IPCC: aat_marks stores lab scaled marks (out of 20), quiz_marks = 0
+        // For theory: aat_marks = aat (10), quiz_marks = quiz (10)
+        aatMarks: isIPCC ? labScaledMarks : aatMarks,
+        quizMarks: isIPCC ? 0 : quizMarks,
         finalCIETotal,
         finalCIEPercentage,
         finalCIEMax

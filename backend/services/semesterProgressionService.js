@@ -30,65 +30,180 @@ class SemesterProgressionService {
       const student = studentQuery.rows[0];
       console.log(`Student: ${student.usn} - ${student.name}`);
 
-      // Get CGPA data
+      // Get pre-computed CGPA (if available)
       const cgpaQuery = await pool.query(
         'SELECT * FROM student_cgpa WHERE student_id = $1',
         [studentId]
       );
+      const cgpaData = cgpaQuery.rows[0] || { cgpa: 0, total_credits_completed: 0, current_semester: 1, cgpa_history: [] };
 
-      const cgpaData = cgpaQuery.rows[0] || {
-        cgpa: 0,
-        total_credits_completed: 0,
-        current_semester: 1,
-        cgpa_history: []
-      };
-
-      // Get semester results (all semesters 1-8)
+      // Get pre-computed semester results
       const semesterQuery = await pool.query(`
-        SELECT
-          semester,
-          academic_year,
-          sgpa,
-          total_credits_registered,
-          total_credits_earned,
-          courses_registered,
-          courses_passed,
-          courses_failed,
-          semester_status,
-          result_date
+        SELECT semester, academic_year, sgpa, total_credits_registered, total_credits_earned,
+               courses_registered, courses_passed, courses_failed, semester_status, result_date
         FROM semester_results
         WHERE student_id = $1
         ORDER BY semester ASC
       `, [studentId]);
-
       const semesterResults = semesterQuery.rows;
-      console.log(`Found results for ${semesterResults.length} semester(s)`);
+
+      // Source 1: enrolled via students_courses — one row per semester (max year for display)
+      const enrolledQuery = await pool.query(`
+        SELECT c.semester, MAX(c.year) as year
+        FROM students_courses sc
+        JOIN courses c ON sc.course_id = c.id
+        WHERE sc.student_id = $1
+        GROUP BY c.semester
+        ORDER BY c.semester ASC
+      `, [studentId]);
+
+      // Source 2: manually added via semester_subjects
+      const subjectSemQuery = await pool.query(`
+        SELECT semester, MAX(academic_year) as year
+        FROM semester_subjects
+        WHERE student_id = $1
+        GROUP BY semester
+        ORDER BY semester ASC
+      `, [studentId]);
+
+      // Merge both sources into a map: semester → year (for display label only)
+      const enrolledMap = new Map();
+      for (const row of enrolledQuery.rows) {
+        enrolledMap.set(parseInt(row.semester), row.year);
+      }
+      for (const row of subjectSemQuery.rows) {
+        const sem = parseInt(row.semester);
+        if (!enrolledMap.has(sem)) {
+          enrolledMap.set(sem, row.year);
+        }
+      }
+
+      console.log(`Enrolled (courses): ${enrolledQuery.rows.length} sem(s), Enrolled (subjects): ${subjectSemQuery.rows.length} sem(s)`);
 
       // Build semesters array (1-8)
       const semesters = [];
+      let cumulativeGP = 0;
+      let cumulativeCredits = 0;
+      const inlineCGPAHistory = [];
 
       for (let semNum = 1; semNum <= 8; semNum++) {
         const semesterResult = semesterResults.find(s => parseInt(s.semester) === semNum);
+        const enrolledYear = enrolledMap.get(semNum);
 
         if (semesterResult) {
-          // Get courses for this semester
-          const courses = await this.getSemesterCourses(studentId, semNum, semesterResult.academic_year);
+          // Always fetch ALL courses without year filter — stale semester_results may have
+          // been computed when fewer courses were enrolled, so year-scoped query drops new ones
+          let courses = await this.getSemesterCourses(studentId, semNum, null);
+          if (courses.length === 0) courses = await this.getSemesterSubjectData(studentId, semNum);
+
+          // Recompute counts from the actual loaded courses (not stale semester_results counts)
+          const gradedCourses = courses.filter(c => c.gradePoints !== null);
+          const passedCourses = courses.filter(c => c.passed);
+          const failedCourses = courses.filter(c => c.gradePoints !== null && !c.passed);
+          const totalCredits  = courses.reduce((s, c) => s + (c.credits || 0), 0);
+          const earnedCredits = passedCourses.reduce((s, c) => s + (c.credits || 0), 0);
+
+          // Recompute SGPA inline from all graded courses so new enrollments are reflected
+          let sgpa = parseFloat(semesterResult.sgpa) || 0;
+          if (gradedCourses.length > 0) {
+            const gpSum = gradedCourses.reduce((s, c) => s + c.gradePoints * (c.credits || 3), 0);
+            const crSum = gradedCourses.reduce((s, c) => s + (c.credits || 3), 0);
+            sgpa = crSum > 0 ? parseFloat((gpSum / crSum).toFixed(2)) : sgpa;
+          }
+
+          // Status: detained > completed > in_progress
+          const allGraded = courses.length > 0 && courses.every(c => c.gradePoints !== null);
+          let status = semesterResult.semester_status || 'in_progress';
+          if (failedCourses.length > 0) status = 'detained';
+          else if (allGraded && passedCourses.length === courses.length && courses.length > 0) status = 'completed';
+          else if (courses.length > 0) status = 'in_progress';
+
+          cumulativeGP += sgpa * earnedCredits;
+          cumulativeCredits += earnedCredits;
+          inlineCGPAHistory.push({
+            semester: semNum,
+            academicYear: semesterResult.academic_year,
+            sgpa: parseFloat(sgpa.toFixed(2)),
+            cgpa: parseFloat((cumulativeCredits > 0 ? cumulativeGP / cumulativeCredits : 0).toFixed(2)),
+            creditsEarned: earnedCredits,
+            status
+          });
 
           semesters.push({
             semester: semNum,
             year: semesterResult.academic_year,
-            sgpa: parseFloat(semesterResult.sgpa) || 0,
-            credits: parseInt(semesterResult.total_credits_registered) || 0,
-            creditsEarned: parseInt(semesterResult.total_credits_earned) || 0,
-            status: semesterResult.semester_status || 'not_started',
-            coursesRegistered: parseInt(semesterResult.courses_registered) || 0,
-            coursesPassed: parseInt(semesterResult.courses_passed) || 0,
-            coursesFailed: parseInt(semesterResult.courses_failed) || 0,
+            sgpa,
+            credits: totalCredits,
+            creditsEarned: earnedCredits,
+            status,
+            coursesRegistered: courses.length,
+            coursesPassed: passedCourses.length,
+            coursesFailed: failedCourses.length,
             resultDate: semesterResult.result_date,
             courses
           });
+
+        } else if (enrolledYear !== undefined) {
+          // Enrolled but SGPA not persisted yet — fetch ALL courses for this semester
+          // without year filter (year mismatch between courses would silently drop rows)
+          let courses = await this.getSemesterCourses(studentId, semNum, null);
+          if (courses.length === 0) {
+            courses = await this.getSemesterSubjectData(studentId, semNum);
+          }
+          // Derive display year from the courses themselves (most recent)
+          const courseYear = courses.length > 0
+            ? Math.max(...courses.map(c => parseInt(c.year) || 0)) || enrolledYear
+            : enrolledYear;
+
+          // Compute inline SGPA from courses with grade points
+          const gradedCourses = courses.filter(c => c.gradePoints !== null);
+          let inlineSGPA = null;
+          if (gradedCourses.length > 0) {
+            const gpSum = gradedCourses.reduce((s, c) => s + c.gradePoints * (c.credits || 3), 0);
+            const crSum = gradedCourses.reduce((s, c) => s + (c.credits || 3), 0);
+            inlineSGPA = crSum > 0 ? parseFloat((gpSum / crSum).toFixed(2)) : null;
+          }
+
+          const totalCredits = courses.reduce((s, c) => s + (c.credits || 0), 0);
+          const passed = courses.filter(c => c.passed);
+          const failed = courses.filter(c => c.gradePoints !== null && !c.passed);
+          const allGraded = courses.length > 0 && courses.every(c => c.gradePoints !== null);
+          const creditsEarned = passed.reduce((s, c) => s + (c.credits || 0), 0);
+
+          // Determine status
+          let status = 'in_progress';
+          if (failed.length > 0) status = 'detained';
+          else if (allGraded && passed.length === courses.length && courses.length > 0) status = 'completed';
+
+          // Accumulate for inline CGPA history (use inline SGPA)
+          if (inlineSGPA !== null) {
+            cumulativeGP += inlineSGPA * creditsEarned;
+            cumulativeCredits += creditsEarned;
+            inlineCGPAHistory.push({
+              semester: semNum,
+              academicYear: courseYear,
+              sgpa: inlineSGPA,
+              cgpa: parseFloat((cumulativeCredits > 0 ? cumulativeGP / cumulativeCredits : 0).toFixed(2)),
+              creditsEarned,
+              status
+            });
+          }
+
+          semesters.push({
+            semester: semNum,
+            year: courseYear,
+            sgpa: inlineSGPA,
+            credits: totalCredits,
+            creditsEarned,
+            status,
+            coursesRegistered: courses.length,
+            coursesPassed: passed.length,
+            coursesFailed: failed.length,
+            resultDate: null,
+            courses
+          });
+
         } else {
-          // Semester not started or no data
           semesters.push({
             semester: semNum,
             year: null,
@@ -105,7 +220,11 @@ class SemesterProgressionService {
         }
       }
 
-      // Parse CGPA history from JSONB
+      // Compute final inline CGPA and use if DB value is absent
+      const inlineCGPA = cumulativeCredits > 0 ? cumulativeGP / cumulativeCredits : 0;
+      const finalCGPA = parseFloat(cgpaData.cgpa) > 0 ? parseFloat(cgpaData.cgpa) : inlineCGPA;
+
+      // Use inline cgpaHistory if DB history is empty
       let cgpaHistory = [];
       try {
         if (cgpaData.cgpa_history) {
@@ -113,10 +232,16 @@ class SemesterProgressionService {
             ? JSON.parse(cgpaData.cgpa_history)
             : cgpaData.cgpa_history;
         }
-      } catch (err) {
-        console.error('Error parsing CGPA history:', err);
-        cgpaHistory = [];
-      }
+      } catch { cgpaHistory = []; }
+      if (cgpaHistory.length === 0) cgpaHistory = inlineCGPAHistory;
+
+      // Derive max semester from all enrollment sources
+      const maxEnrolledSem = enrolledMap.size > 0 ? Math.max(...enrolledMap.keys()) : 1;
+      const activeSems = semesters.filter(s => s.status !== 'not_started');
+      const semestersCompleted = activeSems.filter(s => s.status === 'completed').length;
+      const totalCoursesCompleted = activeSems.reduce((s, sem) => s + sem.coursesPassed, 0);
+      const totalCoursesFailed = activeSems.reduce((s, sem) => s + sem.coursesFailed, 0);
+      const totalCredits = activeSems.reduce((s, sem) => s + sem.creditsEarned, 0);
 
       const progressionData = {
         student: {
@@ -126,24 +251,52 @@ class SemesterProgressionService {
           email: student.email,
           department: student.department
         },
-        currentSemester: parseInt(cgpaData.current_semester) || 1,
-        cgpa: parseFloat(cgpaData.cgpa) || 0,
-        totalCredits: parseInt(cgpaData.total_credits_completed) || 0,
-        semestersCompleted: parseInt(cgpaData.semesters_completed) || 0,
-        totalCoursesCompleted: parseInt(cgpaData.total_courses_completed) || 0,
-        totalCoursesFailed: parseInt(cgpaData.total_courses_failed) || 0,
+        currentSemester: parseInt(cgpaData.current_semester) || maxEnrolledSem,
+        cgpa: parseFloat(finalCGPA.toFixed(2)) || 0,
+        totalCredits: parseInt(cgpaData.total_credits_completed) || totalCredits,
+        semestersCompleted: parseInt(cgpaData.semesters_completed) || semestersCompleted,
+        totalCoursesCompleted: parseInt(cgpaData.total_courses_completed) || totalCoursesCompleted,
+        totalCoursesFailed: parseInt(cgpaData.total_courses_failed) || totalCoursesFailed,
         semesters,
         cgpaHistory
       };
 
-      console.log(`✅ Progression data fetched successfully`);
-      console.log(`   Current Semester: ${progressionData.currentSemester}, CGPA: ${progressionData.cgpa.toFixed(2)}`);
-
+      console.log(`✅ Progression fetched: currentSem=${progressionData.currentSemester}, CGPA=${progressionData.cgpa.toFixed(2)}`);
       return progressionData;
 
     } catch (error) {
       console.error('Error in getStudentProgression:', error);
       throw error;
+    }
+  }
+
+  async getSemesterSubjectData(studentId, semester) {
+    try {
+      const result = await pool.query(`
+        SELECT id as course_id, subject_code as code, subject_name as name,
+               credits, letter_grade, grade_point, is_passed, academic_year
+        FROM semester_subjects
+        WHERE student_id = $1 AND semester = $2
+        ORDER BY subject_code ASC
+      `, [studentId, semester]);
+
+      return result.rows.map(row => ({
+        courseId: row.course_id,
+        code: row.code || '—',
+        name: row.name,
+        credits: parseInt(row.credits) || 3,
+        cieMarks: null,
+        seeMarks: null,
+        finalMarks: null,
+        percentage: null,
+        grade: row.letter_grade || null,
+        gradePoints: row.grade_point !== null ? parseFloat(row.grade_point) : null,
+        passed: row.is_passed === true,
+        source: 'manual'
+      }));
+    } catch (err) {
+      console.error('getSemesterSubjectData error:', err);
+      return [];
     }
   }
 
@@ -154,43 +307,47 @@ class SemesterProgressionService {
    * @param {Number} academicYear - Academic year
    * @returns {Array} Array of course data
    */
-  async getSemesterCourses(studentId, semester, academicYear) {
+  async getSemesterCourses(studentId, semester, academicYear = null) {
     try {
-      const query = `
-        SELECT
-          c.id AS course_id,
-          c.code,
-          c.name,
-          c.credits,
-          sfg.cie_total,
-          sfg.see_total,
-          sfg.final_total,
-          sfg.final_percentage,
-          sfg.letter_grade,
-          sfg.grade_points,
-          sfg.is_passed
-        FROM courses c
-        JOIN students_courses sc ON c.id = sc.course_id
-        LEFT JOIN student_final_grades sfg ON c.id = sfg.course_id AND sc.student_id = sfg.student_id
-        WHERE sc.student_id = $1
-          AND c.semester = $2
-          AND c.year = $3
-        ORDER BY c.code ASC
-      `;
+      // When academicYear is provided we scope to that year (used when semester_results
+      // already has a row so we know the exact academic year).
+      // When null we return ALL courses for that semester number regardless of year —
+      // this prevents year-mismatch from silently dropping enrolled courses.
+      const query = academicYear
+        ? `SELECT c.id AS course_id, c.code, c.name, c.credits, c.year,
+                  sfg.cie_total, sfg.see_total, sfg.final_total, sfg.final_percentage,
+                  sfg.letter_grade, sfg.grade_points, sfg.is_passed
+           FROM courses c
+           JOIN students_courses sc ON c.id = sc.course_id
+           LEFT JOIN student_final_grades sfg
+                  ON c.id = sfg.course_id AND sc.student_id = sfg.student_id
+           WHERE sc.student_id = $1 AND c.semester = $2 AND c.year = $3
+           ORDER BY c.code ASC`
+        : `SELECT c.id AS course_id, c.code, c.name, c.credits, c.year,
+                  sfg.cie_total, sfg.see_total, sfg.final_total, sfg.final_percentage,
+                  sfg.letter_grade, sfg.grade_points, sfg.is_passed
+           FROM courses c
+           JOIN students_courses sc ON c.id = sc.course_id
+           LEFT JOIN student_final_grades sfg
+                  ON c.id = sfg.course_id AND sc.student_id = sfg.student_id
+           WHERE sc.student_id = $1 AND c.semester = $2
+           ORDER BY c.code ASC`;
 
-      const result = await pool.query(query, [studentId, semester, academicYear]);
+      const params = academicYear ? [studentId, semester, academicYear] : [studentId, semester];
+      const result = await pool.query(query, params);
 
       return result.rows.map(row => ({
         courseId: row.course_id,
         code: row.code,
         name: row.name,
         credits: parseInt(row.credits) || 3,
-        cieMarks: parseFloat(row.cie_total) || null,
-        seeMarks: parseFloat(row.see_total) || null,
-        finalMarks: parseFloat(row.final_total) || null,
-        percentage: parseFloat(row.final_percentage) || null,
+        year: row.year,
+        cieMarks: row.cie_total   != null ? parseFloat(row.cie_total)   : null,
+        seeMarks: row.see_total   != null ? parseFloat(row.see_total)   : null,
+        finalMarks: row.final_total != null ? parseFloat(row.final_total) : null,
+        percentage: row.final_percentage != null ? parseFloat(row.final_percentage) : null,
         grade: row.letter_grade || null,
-        gradePoints: parseFloat(row.grade_points) || null,
+        gradePoints: row.grade_points != null ? parseFloat(row.grade_points) : null,
         passed: row.is_passed === true
       }));
 

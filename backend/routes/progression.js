@@ -1,5 +1,8 @@
 import express from 'express';
 import semesterProgressionService from '../services/semesterProgressionService.js';
+import cgpaCalculationService from '../services/cgpaCalculationService.js';
+import gradeCalculationService from '../services/gradeCalculationService.js';
+import detailedCalculationsService from '../services/detailedCalculations.js';
 import { authenticateToken } from '../middleware/auth.js';
 
 const router = express.Router();
@@ -333,6 +336,109 @@ router.get('/department/:department/overview', authenticateToken, async (req, re
       success: false,
       message: error.message || 'Failed to get department overview'
     });
+  }
+});
+
+/**
+ * POST /api/progression/students/:studentId/recalculate
+ * Run the FULL pipeline for a student:
+ *   1. CIE composition → final_cie_composition (per course)
+ *   2. Final grades    → student_final_grades  (per course)
+ *   3. SGPA            → semester_results       (per semester)
+ *   4. CGPA            → student_cgpa
+ * Access: Teacher
+ */
+router.post('/students/:studentId/recalculate', authenticateToken, async (req, res) => {
+  try {
+    const { studentId } = req.params;
+    const pool = (await import('../config/db.js')).default;
+
+    // Get all courses the student is enrolled in
+    const enrolledCoursesQuery = await pool.query(`
+      SELECT DISTINCT sc.course_id, c.semester, c.year
+      FROM students_courses sc
+      JOIN courses c ON sc.course_id = c.id
+      WHERE sc.student_id = $1
+      ORDER BY c.semester ASC, c.year ASC
+    `, [studentId]);
+
+    const enrolledCourses = enrolledCoursesQuery.rows;
+    const results = {
+      cieComposition: { done: [], failed: [] },
+      grades: { done: [], failed: [] },
+      sgpa: { done: [], failed: [] },
+    };
+
+    // Step 1 & 2: per course — CIE composition then final grade
+    for (const row of enrolledCourses) {
+      const { course_id: courseId, semester, year } = row;
+
+      // 1. Recalculate CIE composition for this course (all students)
+      try {
+        await detailedCalculationsService.calculateFinalCIEComposition(courseId);
+        results.cieComposition.done.push(`Course ${courseId} Sem ${semester}`);
+      } catch (err) {
+        results.cieComposition.failed.push(`Sem ${semester}: ${err.message}`);
+      }
+
+      // 2. Calculate this student's final grade for this course
+      try {
+        await gradeCalculationService.calculateFinalGrade(studentId, courseId);
+        results.grades.done.push(`Sem ${semester}`);
+      } catch (err) {
+        // Grade calc fails silently when SEE marks aren't uploaded yet — that's fine
+        results.grades.failed.push(`Sem ${semester}: ${err.message}`);
+      }
+    }
+
+    // Step 3a: SGPA from students_courses (enrolled courses with final grades)
+    const semesterGroups = {};
+    for (const row of enrolledCourses) {
+      const key = `${row.semester}_${row.year}`;
+      semesterGroups[key] = { semester: row.semester, year: row.year };
+    }
+    for (const { semester, year } of Object.values(semesterGroups)) {
+      try {
+        await cgpaCalculationService.calculateSGPA(studentId, semester, year);
+        results.sgpa.done.push(`Semester ${semester} (${year}) [courses]`);
+      } catch (err) {
+        results.sgpa.failed.push(`Semester ${semester} [courses]: ${err.message}`);
+      }
+    }
+
+    // Step 3b: SGPA from semester_subjects (manually entered grades)
+    const subjectSemQuery = await pool.query(`
+      SELECT DISTINCT semester FROM semester_subjects WHERE student_id = $1
+    `, [studentId]);
+    for (const { semester } of subjectSemQuery.rows) {
+      // Only calculate if not already calculated from courses
+      const alreadyDone = results.sgpa.done.some(d => d.startsWith(`Semester ${semester} `));
+      if (!alreadyDone) {
+        try {
+          await cgpaCalculationService.calculateSGPAFromSubjects(studentId, semester);
+          results.sgpa.done.push(`Semester ${semester} [subjects]`);
+        } catch (err) {
+          results.sgpa.failed.push(`Semester ${semester} [subjects]: ${err.message}`);
+        }
+      }
+    }
+
+    // Step 4: CGPA
+    try {
+      await cgpaCalculationService.calculateCGPA(studentId);
+    } catch (err) {
+      console.error('CGPA calculation failed:', err.message);
+    }
+
+    return res.status(200).json({
+      success: true,
+      message: 'Full pipeline recalculated',
+      data: results
+    });
+
+  } catch (error) {
+    console.error('Error in recalculate:', error);
+    return res.status(500).json({ success: false, message: error.message });
   }
 });
 
