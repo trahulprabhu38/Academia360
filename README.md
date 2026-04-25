@@ -1,12 +1,12 @@
-# Academia360
+# skillSync
 
-**Academia360** is a full-stack Outcome-Based Education (OBE) platform designed for engineering colleges to manage student grades, track academic progression, and compute CO/PO attainment metrics required for NBA accreditation. It combines a teacher-facing portal with a set of AI-powered microservices for automated course outcome generation, personalized learning recommendations, and resource discovery.
+**skillSync** is a full-stack Outcome-Based Education (OBE) platform designed for engineering colleges to manage student grades, track academic progression, and compute CO/PO attainment metrics required for NBA accreditation. It combines a teacher-facing portal with a set of AI-powered microservices for automated course outcome generation, personalized learning recommendations, and resource discovery.
 
 ---
 
 ## Overview
 
-Traditional mark-entry and result-processing workflows in engineering colleges are manual, error-prone, and disconnected from accreditation requirements. Academia360 replaces that with a unified system where teachers upload marks once and the platform automatically:
+Traditional mark-entry and result-processing workflows in engineering colleges are manual, error-prone, and disconnected from accreditation requirements. skillSync replaces that with a unified system where teachers upload marks once and the platform automatically:
 
 - Applies VTU grading rules (CIE + SEE, ×2 formula for lab/activity courses)
 - Computes SGPA and CGPA for every student across all semesters
@@ -96,8 +96,8 @@ Traditional mark-entry and result-processing workflows in engineering colleges a
 ### Run with Docker Compose
 
 ```bash
-git clone https://github.com/trahulprabhu38/Academia360.git
-cd Academia360
+git clone https://github.com/trahulprabhu38/skillSync.git
+cd skillSync
 docker compose up --build
 ```
 
@@ -118,7 +118,7 @@ The database is seeded with an admin teacher account. Register new teacher/stude
 
 ## Grading System
 
-Academia360 implements VTU (Visvesvaraya Technological University) grading rules:
+skillSync implements VTU (Visvesvaraya Technological University) grading rules:
 
 | Course Type | Formula |
 |---|---|
@@ -133,7 +133,7 @@ Letter grades follow the 10-point scale: **A+ (10), A (9), B+ (8), B (7), C+ (6)
 ## Project Structure
 
 ```
-Academia360/
+skillSync/
 ├── backend/               # Node.js/Express REST API
 │   ├── routes/            # API route handlers
 │   ├── services/          # Business logic (grades, CGPA, attainment)

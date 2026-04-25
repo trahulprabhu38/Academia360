@@ -146,7 +146,8 @@ const StudentProgression = () => {
         // Auto-recalc when:
         //   (a) stale course count (semester_results computed before new courses were enrolled), OR
         //   (b) courses exist with grades but SGPA is still null (pipeline not yet run), OR
-        //   (c) courses exist but NO grades at all — marks may be uploaded but pipeline never ran
+        //   (c) courses exist but NO grades at all — marks may be uploaded but pipeline never ran, OR
+        //   (d) any course has marks uploaded (hasSeeMarks) but no grade computed yet
         if (autoRecalc) {
           const needsRecalc = d.data?.semesters?.some(s => {
             if (!s.courses?.length) return false;
@@ -155,6 +156,8 @@ const StudentProgression = () => {
             if (hasGrades && s.sgpa === null) return true;
             // Courses exist but zero are graded — marks may be uploaded, pipeline not run
             if (s.coursesRegistered > 0 && !hasGrades && s.status !== 'not_started') return true;
+            // Any course has marks uploaded but no grade — new upload since last recalc
+            if (s.courses.some(c => c.hasSeeMarks && c.gradePoints === null)) return true;
             return false;
           });
           if (needsRecalc) {

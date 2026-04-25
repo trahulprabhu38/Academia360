@@ -138,7 +138,7 @@ class GradeCalculationService {
       const result = await client.query(upsertQuery, [
         studentId,
         courseId,
-        useLowCreditFormula ? null : cieTotalOutOf50,   // null = dash in UI for ×2 courses
+        useLowCreditFormula ? 0 : cieTotalOutOf50,
         useLowCreditFormula ? null : 50.00,
         useLowCreditFormula ? seeMarksObtained : seeTotalForStore,
         useLowCreditFormula ? seeMaxMarks : 50.00,

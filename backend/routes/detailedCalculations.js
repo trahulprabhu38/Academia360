@@ -324,12 +324,26 @@ router.get('/course/:courseId/student/:studentId/performance', authenticateToken
 
     // Get all marksheets for this course (no processing_status filter — some marksheets may not have been through enhanced upload)
     const marksheetsResult = await pool.query(`
-      SELECT m.id, m.assessment_name, m.table_name, fls.assessment_type
+      SELECT m.id, m.assessment_name, m.table_name, m.columns, fls.assessment_type
       FROM marksheets m
       LEFT JOIN file_level_summary fls ON m.id = fls.marksheet_id
       WHERE m.course_id = $1 AND m.table_name IS NOT NULL
       ORDER BY fls.assessment_type, m.created_at
     `, [courseId]);
+
+    // Build a per-marksheet map: normalizedColName → actual column name in the dynamic table.
+    // question_co_mappings stores column names normalised to lowercase, but the actual dynamic
+    // table columns may have their original casing (e.g. "Q1A" not "q1a"). This map lets us
+    // resolve the correct cased column name to use in SQL queries.
+    const normalize = s => (s || '').toLowerCase().replace(/[\s\-_]+/g, '').trim();
+    const marksheetColMaps = {};
+    for (const ms of marksheetsResult.rows) {
+      const cols = Array.isArray(ms.columns) ? ms.columns : (ms.columns ? JSON.parse(ms.columns) : []);
+      marksheetColMaps[ms.id] = {};
+      for (const col of cols) {
+        marksheetColMaps[ms.id][normalize(col)] = col;
+      }
+    }
 
     // Build CO performance data
     const coPerformance = [];
@@ -359,8 +373,15 @@ router.get('/course/:courseId/student/:studentId/performance', authenticateToken
 
         if (mappingsResult.rows.length === 0) continue;
 
-        // Get student's marks from the dynamic table (keep original case — columns were renamed to lowercase)
-        const questionColumns = mappingsResult.rows.map(m => `"${m.question_column}"`).join(', ');
+        // Resolve actual column names from the marksheet's original columns JSON.
+        // question_co_mappings stores normalised (lowercase) names; the dynamic table
+        // uses the original casing from the uploaded file.
+        const colMap = marksheetColMaps[marksheet.id] || {};
+        const resolvedMappings = mappingsResult.rows.map(m => ({
+          ...m,
+          actual_column: colMap[normalize(m.question_column)] || m.question_column
+        }));
+        const questionColumns = resolvedMappings.map(m => `"${m.actual_column}"`).join(', ');
 
         if (!questionColumns) continue;
 
@@ -384,12 +405,12 @@ router.get('/course/:courseId/student/:studentId/performance', authenticateToken
           // CRITICAL: Determine which questions this student actually attempted
           // Import the service class temporarily for this calculation
           const detailedCalcService = (await import('../services/detailedCalculations.js')).default;
-          // Extract just the question column names (function expects array of strings or objects with columnName)
-          const questionNames = mappingsResult.rows.map(m => m.question_column);
+          // Use actual (cased) column names for attempt detection
+          const questionNames = resolvedMappings.map(m => m.actual_column);
           const attemptedQuestions = detailedCalcService.getAttemptedQuestions(marksRow, questionNames);
 
-          for (const mapping of mappingsResult.rows) {
-            const questionCol = mapping.question_column; // lowercase, matches renamed table column
+          for (const mapping of resolvedMappings) {
+            const questionCol = mapping.actual_column; // resolved to actual casing in the dynamic table
             const rawMarks = marksRow[questionCol];
             const maxMarks = parseFloat(mapping.max_marks || 0);
 
@@ -397,7 +418,7 @@ router.get('/course/:courseId/student/:studentId/performance', authenticateToken
             if (maxMarks === 0) continue;
 
             // Check if this question was attempted by the student
-            const wasAttempted = attemptedQuestions.has(mapping.question_column);
+            const wasAttempted = attemptedQuestions.has(mapping.actual_column);
 
             let obtainedMarks = 0;
             let isAttempted = false;
@@ -420,7 +441,7 @@ router.get('/course/:courseId/student/:studentId/performance', authenticateToken
 
             // Add ALL questions to the list with attempt status
             allQuestions.push({
-              question: mapping.question_column,
+              question: mapping.actual_column,
               obtained: obtainedMarks,
               max: maxMarks,
               percentage: questionPercentage,

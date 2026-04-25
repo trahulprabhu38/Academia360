@@ -344,20 +344,26 @@ class SemesterProgressionService {
       const query = academicYear
         ? `SELECT c.id AS course_id, c.code, c.name, c.credits, c.year,
                   sfg.cie_total, sfg.cie_max, sfg.see_total, sfg.final_total, sfg.final_percentage,
-                  sfg.letter_grade, sfg.grade_points, sfg.is_passed
+                  sfg.letter_grade, sfg.grade_points, sfg.is_passed,
+                  (sm.see_marks_obtained IS NOT NULL) AS has_see_marks
            FROM courses c
            JOIN students_courses sc ON c.id = sc.course_id
            LEFT JOIN student_final_grades sfg
                   ON c.id = sfg.course_id AND sc.student_id = sfg.student_id
+           LEFT JOIN see_marks sm
+                  ON c.id = sm.course_id AND sc.student_id = sm.student_id
            WHERE sc.student_id = $1 AND c.semester = $2 AND c.year = $3
            ORDER BY c.code ASC`
         : `SELECT c.id AS course_id, c.code, c.name, c.credits, c.year,
                   sfg.cie_total, sfg.cie_max, sfg.see_total, sfg.final_total, sfg.final_percentage,
-                  sfg.letter_grade, sfg.grade_points, sfg.is_passed
+                  sfg.letter_grade, sfg.grade_points, sfg.is_passed,
+                  (sm.see_marks_obtained IS NOT NULL) AS has_see_marks
            FROM courses c
            JOIN students_courses sc ON c.id = sc.course_id
            LEFT JOIN student_final_grades sfg
                   ON c.id = sfg.course_id AND sc.student_id = sfg.student_id
+           LEFT JOIN see_marks sm
+                  ON c.id = sm.course_id AND sc.student_id = sm.student_id
            WHERE sc.student_id = $1 AND c.semester = $2
            ORDER BY c.code ASC`;
 
@@ -377,7 +383,8 @@ class SemesterProgressionService {
         percentage: row.final_percentage != null ? parseFloat(row.final_percentage) : null,
         grade: row.letter_grade || null,
         gradePoints: row.grade_points != null ? parseFloat(row.grade_points) : null,
-        passed: row.is_passed === true
+        passed: row.is_passed === true,
+        hasSeeMarks: row.has_see_marks === true
       }));
 
     } catch (error) {

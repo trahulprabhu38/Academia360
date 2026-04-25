@@ -424,9 +424,9 @@ router.post('/students/:studentId/recalculate', authenticateToken, async (req, r
                cie_total, cie_max, see_total, see_max,
                final_total, final_max, final_percentage,
                letter_grade, grade_points, credits, is_passed, calculated_at)
-            VALUES ($1,$2, NULL,NULL, $3,100, $4,100,$5, $6,$7,$8,$9, CURRENT_TIMESTAMP)
+            VALUES ($1,$2, 0,NULL, $3,100, $4,100,$5, $6,$7,$8,$9, CURRENT_TIMESTAMP)
             ON CONFLICT (student_id, course_id) DO UPDATE SET
-              cie_total=NULL, cie_max=NULL,
+              cie_total=0, cie_max=NULL,
               see_total=EXCLUDED.see_total, see_max=EXCLUDED.see_max,
               final_total=EXCLUDED.final_total, final_max=EXCLUDED.final_max,
               final_percentage=EXCLUDED.final_percentage,
