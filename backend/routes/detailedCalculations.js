@@ -294,20 +294,40 @@ router.get('/course/:courseId/student/:studentId/performance', authenticateToken
     const student = studentResult.rows[0];
     const studentUSN = student.usn;
 
-    // Get all course outcomes
-    const cosResult = await pool.query(`
+    // Get all course outcomes — fall back to inferred COs from question_co_mappings if table is empty
+    let cosResult = await pool.query(`
       SELECT id, co_number, description, bloom_level
       FROM course_outcomes
       WHERE course_id = $1
       ORDER BY co_number
     `, [courseId]);
 
-    // Get all marksheets for this course
+    if (cosResult.rows.length === 0) {
+      // No explicit COs — derive distinct CO numbers from question_co_mappings
+      const inferredCOs = await pool.query(`
+        SELECT DISTINCT qcm.co_number, qcm.co_id AS id
+        FROM question_co_mappings qcm
+        JOIN marksheets m ON qcm.marksheet_id = m.id
+        WHERE m.course_id = $1
+        ORDER BY qcm.co_number
+      `, [courseId]);
+      // Shape rows to match course_outcomes structure
+      cosResult = {
+        rows: inferredCOs.rows.map(r => ({
+          id: r.id,
+          co_number: r.co_number,
+          description: `CO${r.co_number}`,
+          bloom_level: null
+        }))
+      };
+    }
+
+    // Get all marksheets for this course (no processing_status filter — some marksheets may not have been through enhanced upload)
     const marksheetsResult = await pool.query(`
       SELECT m.id, m.assessment_name, m.table_name, fls.assessment_type
       FROM marksheets m
       LEFT JOIN file_level_summary fls ON m.id = fls.marksheet_id
-      WHERE m.course_id = $1 AND m.processing_status = 'completed'
+      WHERE m.course_id = $1 AND m.table_name IS NOT NULL
       ORDER BY fls.assessment_type, m.created_at
     `, [courseId]);
 

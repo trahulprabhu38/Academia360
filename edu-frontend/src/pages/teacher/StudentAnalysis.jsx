@@ -52,6 +52,7 @@ const StudentAnalysis = () => {
   const [loading, setLoading] = useState(false);
   const [calculating, setCalculating] = useState(false);
   const [courses, setCourses] = useState([]);
+  const [selectedSemester, setSelectedSemester] = useState("");
   const [selectedCourse, setSelectedCourse] = useState("");
   const [detailedResults, setDetailedResults] = useState(null);
   const [error, setError] = useState(null);
@@ -70,6 +71,20 @@ const StudentAnalysis = () => {
       console.error("Error loading courses:", err);
       setError("Failed to load courses");
     }
+  };
+
+  const availableSemesters = [...new Set(courses.map(c => parseInt(c.semester)))].sort((a, b) => a - b);
+  // Only show ≥3 credit courses — 1-2 credit courses use ×2 formula and have no CIE/CO analysis
+  const semesterCourses = selectedSemester
+    ? courses.filter(c => String(c.semester) === String(selectedSemester) && parseInt(c.credits ?? 3) >= 3)
+    : [];
+
+  const handleSemesterChange = (sem) => {
+    setSelectedSemester(sem);
+    setSelectedCourse("");
+    setDetailedResults(null);
+    setError(null);
+    setCOStatus(null);
   };
 
   const checkCOs = async (courseId) => {
@@ -274,29 +289,80 @@ const StudentAnalysis = () => {
           </Box>
         </MotionBox>
 
+        {/* Step 1 — Semester selector */}
         <MotionCard
           initial={{ opacity: 0, y: 20 }}
           animate={{ opacity: 1, y: 0 }}
           transition={{ duration: 0.5 }}
-          sx={{ mb: 4 }}
+          sx={{ mb: 2, border: selectedSemester ? '2px solid #41644A' : '1px solid', borderColor: selectedSemester ? '#41644A' : 'divider' }}
         >
           <CardContent>
-            <FormControl fullWidth>
-              <InputLabel>Select Course</InputLabel>
-              <Select
-                value={selectedCourse}
-                onChange={(e) => setSelectedCourse(e.target.value)}
-                label="Select Course"
-              >
-                {courses.map((course) => (
-                  <MenuItem key={course.id} value={course.id}>
-                    {course.name} ({course.code})
-                  </MenuItem>
-                ))}
-              </Select>
-            </FormControl>
+            <Typography variant="subtitle1" fontWeight="bold" gutterBottom>
+              Step 1 — Select Semester
+            </Typography>
+            <Box display="flex" flexWrap="wrap" gap={1}>
+              {availableSemesters.length === 0 ? (
+                <Typography variant="body2" color="text.secondary">Loading semesters…</Typography>
+              ) : (
+                availableSemesters.map(sem => (
+                  <Button
+                    key={sem}
+                    variant={String(selectedSemester) === String(sem) ? "contained" : "outlined"}
+                    size="small"
+                    onClick={() => handleSemesterChange(String(sem))}
+                    sx={{
+                      borderRadius: 3,
+                      textTransform: 'none',
+                      fontWeight: 600,
+                      ...(String(selectedSemester) === String(sem)
+                        ? { background: 'linear-gradient(135deg, #41644A 0%, #0D4715 100%)', color: 'white' }
+                        : {}),
+                    }}
+                  >
+                    Semester {sem}
+                    <Box component="span" sx={{ ml: 0.5, fontSize: '0.7rem', opacity: 0.65 }}>
+                      ({courses.filter(c => String(c.semester) === String(sem) && parseInt(c.credits ?? 3) >= 3).length})
+                    </Box>
+                  </Button>
+                ))
+              )}
+            </Box>
           </CardContent>
         </MotionCard>
+
+        {/* Step 2 — Course selector (appears after semester chosen) */}
+        {selectedSemester && (
+          <MotionCard
+            key={`course-sel-${selectedSemester}`}
+            initial={{ opacity: 0, y: 12 }}
+            animate={{ opacity: 1, y: 0 }}
+            transition={{ duration: 0.25 }}
+            sx={{ mb: 4, border: selectedCourse ? '2px solid #41644A' : '1px solid', borderColor: selectedCourse ? '#41644A' : 'divider' }}
+          >
+            <CardContent>
+              <Typography variant="subtitle1" fontWeight="bold" gutterBottom>
+                Step 2 — Select Course
+                <Box component="span" sx={{ ml: 1, fontWeight: 400, fontSize: '0.85rem', color: 'text.secondary' }}>
+                  (Semester {selectedSemester} · {semesterCourses.length} courses)
+                </Box>
+              </Typography>
+              <FormControl fullWidth>
+                <InputLabel>Select Course</InputLabel>
+                <Select
+                  value={selectedCourse}
+                  onChange={(e) => setSelectedCourse(e.target.value)}
+                  label="Select Course"
+                >
+                  {semesterCourses.map((course) => (
+                    <MenuItem key={course.id} value={course.id}>
+                      {course.name} ({course.code}) · {course.credits ?? 3} cr
+                    </MenuItem>
+                  ))}
+                </Select>
+              </FormControl>
+            </CardContent>
+          </MotionCard>
+        )}
 
         {/* CO status banner — shown as soon as a course is selected */}
         {selectedCourse && coStatus !== null && (
@@ -305,8 +371,8 @@ const StudentAnalysis = () => {
             sx={{ mb: 3 }}
           >
             {coStatus.count > 0
-              ? `✅ Course Outcomes uploaded — ${coStatus.count} CO${coStatus.count !== 1 ? "s" : ""} defined (${coStatus.cos.map(c => `CO${c.co_number}`).join(", ")}). Ready to run calculations.`
-              : "⚠️ No Course Outcomes (COs) are defined for this course. Please upload COs before running calculations."}
+              ? `✅ ${coStatus.count} Course Outcome${coStatus.count !== 1 ? "s" : ""} defined (${coStatus.cos.map(c => `CO${c.co_number}`).join(", ")}). Upload CO mapping CSVs for each marksheet then click Run Calculations.`
+              : "⚠️ No Course Outcomes found for this course. Upload a CO mapping CSV — COs will be created automatically. Then click Run Calculations."}
           </Alert>
         )}
 
@@ -399,16 +465,16 @@ const StudentAnalysis = () => {
                     <Box display="flex" alignItems="center" justifyContent="space-between">
                       <Box>
                         <Typography variant="h4" fontWeight="bold">
-                            {
-                              detailedResults?.combinedCOAttainment?.length > 0
-                                ? (
-                                    detailedResults.combinedCOAttainment.reduce(
-                                      (sum, co) => sum + Number(co?.overall_co_attainment_percent || 0),
-                                      0
-                                    ) / detailedResults.combinedCOAttainment.length
-                                  ).toFixed(1)
-                                : "0"
-                            }%
+                          {
+                            detailedResults?.combinedCOAttainment?.length > 0
+                              ? (
+                                  detailedResults.combinedCOAttainment.reduce(
+                                    (sum, co) => sum + Number(co?.overall_co_attainment_percent || 0),
+                                    0
+                                  ) / detailedResults.combinedCOAttainment.length
+                                ).toFixed(1)
+                              : "0"
+                          }%
                         </Typography>
                         <Typography variant="body2">Avg CO Attainment</Typography>
                       </Box>
@@ -740,7 +806,7 @@ const StudentAnalysis = () => {
         {!loading && !detailedResults && !error && !selectedCourse && (
           <Box display="flex" justifyContent="center" alignItems="center" minHeight="300px">
             <Typography variant="h6" color="text.secondary">
-              Please select a course to view analysis
+              {selectedSemester ? "Select a course to view analysis" : "Select a semester to get started"}
             </Typography>
           </Box>
         )}

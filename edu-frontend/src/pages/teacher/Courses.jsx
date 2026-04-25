@@ -29,7 +29,7 @@ const Courses = () => {
   const [editMode, setEditMode] = useState(false);
   const [selectedCourse, setSelectedCourse] = useState(null);
   const [menuAnchor, setMenuAnchor] = useState(null);
-  const [selectedSemester, setSelectedSemester] = useState('all');
+  const [selectedSemester, setSelectedSemester] = useState('5');
   const [formData, setFormData] = useState({
     code: '',
     name: '',

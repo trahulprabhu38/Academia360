@@ -87,20 +87,13 @@ class SEEMarksService {
           const studentId = studentQuery.rows[0].id;
           const studentName = studentQuery.rows[0].name;
 
-          // Check if student is enrolled in course
-          const enrollmentQuery = await client.query(
-            'SELECT id FROM students_courses WHERE student_id = $1 AND course_id = $2',
+          // Auto-enroll student if not already in students_courses
+          await client.query(
+            `INSERT INTO students_courses (student_id, course_id)
+             VALUES ($1, $2)
+             ON CONFLICT (student_id, course_id) DO NOTHING`,
             [studentId, courseId]
           );
-
-          if (enrollmentQuery.rows.length === 0) {
-            results.errors.push({
-              usn,
-              error: 'Student not enrolled in this course'
-            });
-            results.failed++;
-            continue;
-          }
 
           // Insert or update SEE marks (including grade)
           const upsertQuery = `

@@ -403,6 +403,32 @@ class COMappingService {
       coMap[co.co_number] = co.id;
     }
 
+    // Auto-create any missing course_outcomes entries so mappings are never silently dropped.
+    // This happens when the teacher uploads CO mappings before explicitly adding Course Outcomes.
+    const missingCONumbers = [...new Set(mappings.map(m => m.coNumber))].filter(n => !coMap[n]);
+    if (missingCONumbers.length > 0) {
+      console.log(`Auto-creating ${missingCONumbers.length} missing CO entries: CO${missingCONumbers.join(', CO')}`);
+      for (const coNum of missingCONumbers) {
+        const res = await pool.query(`
+          INSERT INTO course_outcomes (course_id, co_number, description, bloom_level, is_ai_generated)
+          VALUES ($1, $2, $3, 'Remember', FALSE)
+          ON CONFLICT (course_id, co_number) DO NOTHING
+          RETURNING id, co_number
+        `, [courseId, coNum, `CO${coNum}`]);
+        if (res.rows.length > 0) {
+          coMap[coNum] = res.rows[0].id;
+          console.log(`  ✓ Created CO${coNum} with id ${res.rows[0].id}`);
+        } else {
+          // Already exists after conflict — fetch it
+          const existing = await pool.query(
+            'SELECT id FROM course_outcomes WHERE course_id = $1 AND co_number = $2',
+            [courseId, coNum]
+          );
+          if (existing.rows.length > 0) coMap[coNum] = existing.rows[0].id;
+        }
+      }
+    }
+
     // Begin transaction
     const client = await pool.connect();
     try {
@@ -416,7 +442,7 @@ class COMappingService {
         const coId = coMap[mapping.coNumber];
 
         if (!coId) {
-          console.warn(`⚠️  CO${mapping.coNumber} not found in course, skipping mapping for ${mapping.questionColumn}`);
+          console.warn(`⚠️  CO${mapping.coNumber} still not found after auto-create, skipping ${mapping.questionColumn}`);
           continue;
         }
 

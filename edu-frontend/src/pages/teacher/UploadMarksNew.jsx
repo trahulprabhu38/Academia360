@@ -26,18 +26,23 @@ const THEORY_SLOTS = [
 ];
 const ALL_SLOTS = [...THEORY_SLOTS];
 
-function getSections(courseType) {
-  if (courseType === "IPCC") return [
-    { title: "Theory Components", icon: BookOpen, slots: THEORY_SLOTS },
-  ];
-  return [
-    { title: "Theory Components", icon: BookOpen, slots: THEORY_SLOTS },
-  ];
-}
+// CIA slots (no AAT) — used when a low-credit theory course declares it has CIEs
+const CIA_SLOTS = THEORY_SLOTS.filter(s => s.id.startsWith("cia"));
 
-// Whether this course needs a Lab SCE upload
-function needsLabSCE(courseType, credits) {
-  return courseType === "IPCC" || courseType === "STANDALONE_LAB" || credits <= 2;
+// Returns upload sections based on course type, credits, and CIE configuration.
+// cieConfig only applies to low-credit non-lab courses; ignored otherwise.
+function getSections(courseType, credits, cieConfig = null) {
+  if (credits <= 2) {
+    if (cieConfig?.hasCIE && cieConfig?.count) {
+      return [{
+        title: "Internal Assessments (CIE)",
+        icon: BookOpen,
+        slots: CIA_SLOTS.slice(0, cieConfig.count),
+      }];
+    }
+    return [];
+  }
+  return [{ title: "Theory Components", icon: BookOpen, slots: THEORY_SLOTS }];
 }
 
 // ── Slot detection: exact normalized match ────────────────────────────────────
@@ -346,141 +351,14 @@ function UploadSlot({ slot, courseId, uploadedSlotIds, onUploaded }) {
   );
 }
 
-// ── Lab SCE Upload Slot ───────────────────────────────────────────────────────
-// Accepts USN + final marks (out of 50). Backend scales to 20.
-function LabSCEUploadSlot({ courseId, hasLabUploaded, onUploaded }) {
-  const [file, setFile]         = useState(null);
-  const [uploading, setUploading] = useState(false);
-  const [result, setResult]     = useState(null);
-  const fileRef = useRef(null);
 
-  const downloadTemplate = () => {
-    const ws = XLSX.utils.json_to_sheet([
-      { USN: "1MS22CS001", Final_Marks: 45 },
-      { USN: "1MS22CS002", Final_Marks: 38 },
-    ]);
-    ws["!cols"] = [{ wch: 15 }, { wch: 14 }];
-    const wb = XLSX.utils.book_new();
-    XLSX.utils.book_append_sheet(wb, ws, "Lab SCE Template");
-    XLSX.writeFile(wb, "Lab_SCE_Template.xlsx");
-  };
-
-  const handleUpload = async () => {
-    if (!file) { toast.error("Please select a file"); return; }
-    setUploading(true);
-    try {
-      const buffer = await file.arrayBuffer();
-      const wb = XLSX.read(buffer, { type: "array" });
-      const ws = wb.Sheets[wb.SheetNames[0]];
-      const rows = XLSX.utils.sheet_to_json(ws);
-      const marksData = rows
-        .map(r => ({
-          usn: (r.USN || r.usn || "").toString().trim(),
-          marks: parseFloat(r.Final_Marks ?? r.final_marks ?? r.Marks ?? r.marks ?? NaN),
-        }))
-        .filter(r => r.usn && !isNaN(r.marks));
-
-      if (marksData.length === 0) {
-        toast.error("No valid rows. Ensure columns USN and Final_Marks exist.");
-        return;
-      }
-      const token = localStorage.getItem("token");
-      const resp = await axios.post(
-        `${API_BASE}/lab-marks/courses/${courseId}/upload`,
-        { marksData },
-        { headers: { Authorization: `Bearer ${token}` } }
-      );
-      const data = resp.data.data || resp.data;
-      setResult(data);
-      toast.success(`Lab SCE: ${data.uploaded ?? 0} uploaded, ${data.updated ?? 0} updated`);
-      onUploaded?.();
-    } catch (err) {
-      toast.error(err.response?.data?.message || err.message || "Lab upload failed");
-    } finally {
-      setUploading(false);
-    }
-  };
-
-  const isUploaded = result !== null || hasLabUploaded;
-
-  return (
-    <motion.div
-      layout
-      className={`rounded-2xl border-2 overflow-hidden bg-white dark:bg-dark-bg-secondary transition-colors duration-300
-        ${isUploaded ? "border-green-400 dark:border-green-600" : "border-green-200 dark:border-green-900"}`}
-    >
-      <div className="flex items-center gap-3 px-4 py-3 bg-green-50 dark:bg-green-950/30">
-        {isUploaded
-          ? <CheckCircle className="w-5 h-5 text-green-500 shrink-0" />
-          : <Circle className="w-5 h-5 text-neutral-300 dark:text-neutral-600 shrink-0" />}
-        <div className="flex-1">
-          <p className={`font-semibold text-sm ${isUploaded ? "text-green-700 dark:text-green-400" : "text-neutral-800 dark:text-dark-text-primary"}`}>
-            Lab SCE (Final Marks)
-          </p>
-          <p className="text-[11px] text-neutral-400">Out of 50 — auto-scaled to 20 for CIE</p>
-        </div>
-        {isUploaded && (
-          <span className="shrink-0 text-[10px] font-bold px-2 py-0.5 rounded-full bg-green-100 dark:bg-green-900/40 text-green-700 dark:text-green-300">
-            Uploaded
-          </span>
-        )}
-      </div>
-
-      <AnimatePresence mode="wait">
-        {isUploaded ? (
-          <motion.div key="success" initial={{ opacity: 0, y: 8 }} animate={{ opacity: 1, y: 0 }} exit={{ opacity: 0 }} className="p-4 space-y-3">
-            <div className="flex items-center gap-2 text-green-600 dark:text-green-400">
-              <CheckCircle className="w-4 h-4" />
-              <span className="text-sm font-medium">Lab SCE marks loaded</span>
-            </div>
-            {result && (
-              <div className="grid grid-cols-3 gap-2">
-                <StatChip icon={Users}     label="Uploaded" value={result.uploaded} color="green" />
-                <StatChip icon={RefreshCw} label="Updated"  value={result.updated}  color="blue"  />
-                <StatChip icon={AlertCircle} label="Failed" value={result.failed}   color="amber" />
-              </div>
-            )}
-            <button className="text-xs text-neutral-400 hover:text-neutral-600 dark:hover:text-neutral-300 underline underline-offset-2"
-              onClick={() => { setResult(null); setFile(null); }}>Re-upload</button>
-          </motion.div>
-        ) : (
-          <motion.div key="form" initial={{ opacity: 0, y: 8 }} animate={{ opacity: 1, y: 0 }} exit={{ opacity: 0 }} className="p-4 space-y-3">
-            <p className="text-xs text-green-800 dark:text-green-300">
-              Upload Excel/CSV with columns <strong>USN</strong> and <strong>Final_Marks</strong> (0–50).
-              Marks will be converted to out of 20 automatically.
-            </p>
-            <div className="flex gap-2 flex-wrap">
-              <Button variant="outline" size="sm" onClick={downloadTemplate}>
-                <Download className="w-3.5 h-3.5 mr-1" /> Template
-              </Button>
-              <Button size="sm" variant="outline" onClick={() => fileRef.current?.click()} disabled={uploading}
-                className="text-green-700 border-green-300">
-                <FileText className="w-3.5 h-3.5 mr-1" />
-                {file ? file.name : "Choose File"}
-              </Button>
-              <input ref={fileRef} type="file" accept=".xlsx,.xls,.csv" className="hidden"
-                onChange={e => { if (e.target.files[0]) setFile(e.target.files[0]); e.target.value = ""; }} />
-              {file && !uploading && (
-                <button onClick={() => setFile(null)} className="text-xs text-neutral-400 hover:text-neutral-600 dark:hover:text-neutral-300"><X className="w-4 h-4" /></button>
-              )}
-            </div>
-            {file && (
-              <Button size="sm" onClick={handleUpload} disabled={uploading}>
-                {uploading ? <><Loader2 className="w-4 h-4 mr-1.5 animate-spin" />Uploading…</> : <><CloudUpload className="w-4 h-4 mr-1.5" />Upload Lab SCE</>}
-              </Button>
-            )}
-          </motion.div>
-        )}
-      </AnimatePresence>
-    </motion.div>
-  );
-}
 
 // ── SEE Upload Slot ───────────────────────────────────────────────────────────
 function SEEUploadSlot({ courseId, hasSEEUploaded, onUploaded }) {
-  const [file, setFile]       = useState(null);
+  const [file, setFile]           = useState(null);
   const [uploading, setUploading] = useState(false);
-  const [result, setResult]   = useState(null);
+  const [recalculating, setRecalculating] = useState(false);
+  const [result, setResult]       = useState(null);
   const fileRef = useRef(null);
 
   const downloadTemplate = () => {
@@ -524,6 +402,21 @@ function SEEUploadSlot({ courseId, hasSEEUploaded, onUploaded }) {
       setResult(data);
       toast.success(`SEE: ${data.uploaded ?? 0} uploaded, ${data.updated ?? 0} updated`);
       onUploaded?.();
+
+      // Auto-recalculate final grades + SGPA for all students in this course
+      setRecalculating(true);
+      try {
+        await axios.post(
+          `${API_BASE}/grades/courses/${courseId}/calculate`,
+          {},
+          { headers: { Authorization: `Bearer ${localStorage.getItem("token")}` } }
+        );
+        toast.success("Grades & SGPA recalculated automatically");
+      } catch {
+        toast("Grades not recalculated — click Recalculate on Student Progression if needed", { icon: "⚠️" });
+      } finally {
+        setRecalculating(false);
+      }
     } catch (err) {
       toast.error(err.response?.data?.message || err.message || "SEE upload failed");
     } finally {
@@ -569,6 +462,11 @@ function SEEUploadSlot({ courseId, hasSEEUploaded, onUploaded }) {
             <div className="flex items-center gap-2 text-green-600 dark:text-green-400">
               <CheckCircle className="w-4 h-4" />
               <span className="text-sm font-medium">SEE marks loaded</span>
+              {recalculating && (
+                <span className="flex items-center gap-1 text-xs text-neutral-400 ml-2">
+                  <Loader2 className="w-3 h-3 animate-spin" /> Recalculating grades…
+                </span>
+              )}
             </div>
             {result && (
               <div className="grid grid-cols-3 gap-2">
@@ -623,7 +521,7 @@ function SEEUploadSlot({ courseId, hasSEEUploaded, onUploaded }) {
               )}
             </div>
             {file && (
-              <Button size="sm" onClick={handleUpload} disabled={uploading}>
+              <Button size="sm" onClick={handleUpload} disabled={uploading || recalculating}>
                 {uploading
                   ? <><Loader2 className="w-4 h-4 mr-1.5 animate-spin" />Uploading…</>
                   : <><CloudUpload className="w-4 h-4 mr-1.5" />Upload SEE</>}
@@ -660,14 +558,17 @@ function SectionProgress({ slots, uploadedSlotIds, localUploaded }) {
 // ── Main hub ──────────────────────────────────────────────────────────────────
 const UploadMarksNew = () => {
   const [courses, setCourses]             = useState([]);
+  const [selectedSemester, setSelectedSemester] = useState("");
   const [selectedCourse, setSelected]     = useState("");
   const [selectedCourseObj, setCourseObj] = useState(null);
   const [loadingCourses, setLoadingCourses] = useState(true);
   const [uploadedSlotIds, setUploadedSlotIds] = useState(new Set());
   const [localUploaded, setLocalUploaded] = useState(new Set());   // uploaded this session
   const [hasSEEUploaded, setSEEUploaded]  = useState(false);
-  const [hasLabUploaded, setLabUploaded]  = useState(false);
   const [refreshing, setRefreshing]       = useState(false);
+  // CIE configuration for low-credit non-lab courses
+  const [lowCreditHasCIE, setLowCreditHasCIE]     = useState(null); // null | true | false
+  const [lowCreditCIECount, setLowCreditCIECount]  = useState(null); // null | 1 | 2 | 3
 
   useEffect(() => { loadCourses(); }, []);
 
@@ -681,6 +582,22 @@ const UploadMarksNew = () => {
     } finally {
       setLoadingCourses(false);
     }
+  };
+
+  const availableSemesters = [...new Set(courses.map(c => parseInt(c.semester)))].sort((a, b) => a - b);
+  const semesterCourses = selectedSemester
+    ? courses.filter(c => String(c.semester) === String(selectedSemester))
+    : [];
+
+  const handleSemesterChange = (sem) => {
+    setSelectedSemester(sem);
+    setSelected("");
+    setCourseObj(null);
+    setUploadedSlotIds(new Set());
+    setLocalUploaded(new Set());
+    setSEEUploaded(false);
+    setLowCreditHasCIE(null);
+    setLowCreditCIECount(null);
   };
 
   const loadMarksheets = useCallback(async (courseId) => {
@@ -698,13 +615,6 @@ const UploadMarksNew = () => {
       });
       setSEEUploaded((seeRes.data.data?.totalUploaded ?? 0) > 0);
     } catch { /* ignore */ }
-    try {
-      const token  = localStorage.getItem("token");
-      const labRes = await axios.get(`${API_BASE}/lab-marks/courses/${courseId}/status`, {
-        headers: { Authorization: `Bearer ${token}` },
-      });
-      setLabUploaded((labRes.data.data?.totalUploaded ?? 0) > 0);
-    } catch { /* ignore */ }
   }, []);
 
   const handleCourseChange = async (courseId) => {
@@ -712,7 +622,8 @@ const UploadMarksNew = () => {
     setUploadedSlotIds(new Set());
     setLocalUploaded(new Set());
     setSEEUploaded(false);
-    setLabUploaded(false);
+    setLowCreditHasCIE(null);
+    setLowCreditCIECount(null);
     if (!courseId) { setCourseObj(null); return; }
     try {
       const res = await courseAPI.getById(courseId);
@@ -746,7 +657,14 @@ const UploadMarksNew = () => {
     setLocalUploaded(prev => new Set([...prev, slotId]));
   };
 
-  const sections = selectedCourseObj ? getSections(selectedCourseObj.course_type) : [];
+  const isLowCreditNonLab = selectedCourseObj &&
+    parseInt(selectedCourseObj.credits) <= 2 &&
+    selectedCourseObj.course_type !== 'STANDALONE_LAB';
+
+  const cieConfig = { hasCIE: lowCreditHasCIE, count: lowCreditCIECount };
+  const sections = selectedCourseObj
+    ? getSections(selectedCourseObj.course_type, selectedCourseObj.credits ?? 3, isLowCreditNonLab ? cieConfig : null)
+    : [];
 
   const courseTypeBadge = {
     IPCC:             "bg-blue-100  text-blue-700  dark:bg-blue-900/30  dark:text-blue-300",
@@ -775,40 +693,93 @@ const UploadMarksNew = () => {
           </div>
         </motion.div>
 
-        {/* Course selector */}
-        <motion.div initial={{ opacity: 0, y: 20 }} animate={{ opacity: 1, y: 0 }} transition={{ delay: 0.1 }} className="mb-8">
-          <Card className={`transition-all duration-300 ${selectedCourse ? "border-2 border-primary-500 dark:border-dark-green-500 shadow-lg" : "border-2"}`}>
+        {/* Step 1 — Semester selector */}
+        <motion.div initial={{ opacity: 0, y: 20 }} animate={{ opacity: 1, y: 0 }} transition={{ delay: 0.1 }} className="mb-4">
+          <Card className={`transition-all duration-300 ${selectedSemester ? "border-2 border-primary-500 dark:border-dark-green-500 shadow-md" : "border-2"}`}>
             <CardContent className="p-6">
               <div className="flex items-center gap-3 mb-4">
-                <GraduationCap className="w-6 h-6 text-primary-600 dark:text-dark-green-500" />
-                <h2 className="text-xl font-bold text-neutral-800 dark:text-dark-text-primary">Select Course</h2>
-                {selectedCourse && (
-                  <button
-                    onClick={handleRefresh}
-                    disabled={refreshing}
-                    className="ml-auto p-1.5 rounded-lg hover:bg-neutral-100 dark:hover:bg-dark-bg-tertiary transition-colors"
-                    title="Refresh"
-                  >
-                    <RefreshCw className={`w-4 h-4 text-neutral-500 ${refreshing ? "animate-spin" : ""}`} />
-                  </button>
+                <BookOpen className="w-6 h-6 text-primary-600 dark:text-dark-green-500" />
+                <h2 className="text-xl font-bold text-neutral-800 dark:text-dark-text-primary">
+                  Step 1 — Select Semester
+                </h2>
+              </div>
+              <div className="flex flex-wrap gap-2">
+                {loadingCourses ? (
+                  <p className="text-sm text-neutral-400">Loading semesters…</p>
+                ) : availableSemesters.length === 0 ? (
+                  <p className="text-sm text-neutral-400">No courses found.</p>
+                ) : (
+                  availableSemesters.map(sem => (
+                    <button
+                      key={sem}
+                      onClick={() => handleSemesterChange(String(sem))}
+                      className={`px-5 py-2.5 rounded-xl font-semibold text-sm border-2 transition-all duration-200
+                        ${String(selectedSemester) === String(sem)
+                          ? "border-primary-500 bg-primary-500 text-white dark:border-dark-green-500 dark:bg-dark-green-500 shadow"
+                          : "border-neutral-300 dark:border-dark-border text-neutral-700 dark:text-neutral-300 hover:border-primary-400 dark:hover:border-dark-green-500 hover:bg-neutral-50 dark:hover:bg-dark-bg-tertiary"
+                        }`}
+                    >
+                      Semester {sem}
+                      <span className="ml-2 text-xs opacity-70">
+                        ({courses.filter(c => String(c.semester) === String(sem)).length})
+                      </span>
+                    </button>
+                  ))
                 )}
               </div>
-              <select
-                value={selectedCourse}
-                onChange={e => handleCourseChange(e.target.value)}
-                disabled={loadingCourses}
-                className="w-full px-4 py-3 bg-white dark:bg-dark-bg-secondary border-2 border-neutral-300 dark:border-dark-border rounded-xl text-neutral-800 dark:text-dark-text-primary font-medium focus:outline-none focus:border-primary-500 dark:focus:border-dark-green-500 disabled:opacity-50"
-              >
-                <option value="">-- Select a course --</option>
-                {courses.map(c => (
-                  <option key={c.id} value={c.id}>
-                    {c.code} — {c.name}  ({c.course_type || "THEORY"} · Sem {c.semester} · {c.year})
-                  </option>
-                ))}
-              </select>
             </CardContent>
           </Card>
         </motion.div>
+
+        {/* Step 2 — Course selector (only shown after semester selected) */}
+        <AnimatePresence>
+        {selectedSemester && (
+          <motion.div
+            key={`course-sel-${selectedSemester}`}
+            initial={{ opacity: 0, y: 12 }}
+            animate={{ opacity: 1, y: 0 }}
+            exit={{ opacity: 0, y: -8 }}
+            transition={{ duration: 0.25 }}
+            className="mb-8"
+          >
+            <Card className={`transition-all duration-300 ${selectedCourse ? "border-2 border-primary-500 dark:border-dark-green-500 shadow-lg" : "border-2"}`}>
+              <CardContent className="p-6">
+                <div className="flex items-center gap-3 mb-4">
+                  <GraduationCap className="w-6 h-6 text-primary-600 dark:text-dark-green-500" />
+                  <h2 className="text-xl font-bold text-neutral-800 dark:text-dark-text-primary">
+                    Step 2 — Select Course
+                    <span className="ml-2 text-sm font-normal text-neutral-500">
+                      (Semester {selectedSemester} · {semesterCourses.length} courses)
+                    </span>
+                  </h2>
+                  {selectedCourse && (
+                    <button
+                      onClick={handleRefresh}
+                      disabled={refreshing}
+                      className="ml-auto p-1.5 rounded-lg hover:bg-neutral-100 dark:hover:bg-dark-bg-tertiary transition-colors"
+                      title="Refresh"
+                    >
+                      <RefreshCw className={`w-4 h-4 text-neutral-500 ${refreshing ? "animate-spin" : ""}`} />
+                    </button>
+                  )}
+                </div>
+                <select
+                  value={selectedCourse}
+                  onChange={e => handleCourseChange(e.target.value)}
+                  className="w-full px-4 py-3 bg-white dark:bg-dark-bg-secondary border-2 border-neutral-300 dark:border-dark-border rounded-xl text-neutral-800 dark:text-dark-text-primary font-medium focus:outline-none focus:border-primary-500 dark:focus:border-dark-green-500"
+                >
+                  <option value="">-- Select a course --</option>
+                  {semesterCourses.map(c => (
+                    <option key={c.id} value={c.id}>
+                      {c.code} — {c.name}  ({c.course_type || "THEORY"} · {c.credits ?? 3} cr · {c.year})
+                    </option>
+                  ))}
+                </select>
+              </CardContent>
+            </Card>
+          </motion.div>
+        )}
+        </AnimatePresence>
 
         {/* Upload hub */}
         <AnimatePresence>
@@ -842,6 +813,97 @@ const UploadMarksNew = () => {
                   <FlaskConical className="w-4 h-4 mt-0.5 shrink-0" />
                   <span><strong>IPCC Course</strong> — Upload theory CIA marks and lab CIA marks separately.</span>
                 </div>
+              )}
+
+              {/* CIE Configuration — only for 1-2 credit non-lab courses */}
+              {isLowCreditNonLab && (
+                <AnimatePresence>
+                  <motion.div
+                    key="cie-config"
+                    initial={{ opacity: 0, y: 12 }}
+                    animate={{ opacity: 1, y: 0 }}
+                    exit={{ opacity: 0 }}
+                    transition={{ duration: 0.25 }}
+                  >
+                    <Card className={`border-2 transition-all duration-300 ${lowCreditHasCIE !== null ? 'border-primary-500 dark:border-dark-green-500 shadow-md' : 'border-amber-300 dark:border-amber-700'}`}>
+                      <CardContent className="p-6">
+                        <div className="flex items-center gap-2 mb-3">
+                          <BookOpen className="w-5 h-5 text-amber-600 dark:text-amber-400" />
+                          <h3 className="text-base font-bold text-neutral-800 dark:text-dark-text-primary">
+                            CIE Configuration
+                          </h3>
+                          <span className="ml-1 text-xs text-neutral-400">
+                            ({selectedCourseObj.credits} credit course)
+                          </span>
+                        </div>
+                        <p className="text-sm text-neutral-600 dark:text-dark-text-secondary mb-4">
+                          Does this course have internal assessments (CIEs)?
+                        </p>
+                        <div className="flex gap-3 flex-wrap mb-4">
+                          <button
+                            onClick={() => { setLowCreditHasCIE(true); setLowCreditCIECount(null); }}
+                            className={`px-5 py-2.5 rounded-xl font-semibold text-sm border-2 transition-all duration-200
+                              ${lowCreditHasCIE === true
+                                ? 'border-primary-500 bg-primary-500 text-white dark:border-dark-green-500 dark:bg-dark-green-500 shadow'
+                                : 'border-neutral-300 dark:border-dark-border text-neutral-700 dark:text-neutral-300 hover:border-primary-400 dark:hover:border-dark-green-500 hover:bg-neutral-50 dark:hover:bg-dark-bg-tertiary'}`}
+                          >
+                            Yes — has CIEs
+                          </button>
+                          <button
+                            onClick={() => { setLowCreditHasCIE(false); setLowCreditCIECount(null); }}
+                            className={`px-5 py-2.5 rounded-xl font-semibold text-sm border-2 transition-all duration-200
+                              ${lowCreditHasCIE === false
+                                ? 'border-primary-500 bg-primary-500 text-white dark:border-dark-green-500 dark:bg-dark-green-500 shadow'
+                                : 'border-neutral-300 dark:border-dark-border text-neutral-700 dark:text-neutral-300 hover:border-primary-400 dark:hover:border-dark-green-500 hover:bg-neutral-50 dark:hover:bg-dark-bg-tertiary'}`}
+                          >
+                            No — final marks only
+                          </button>
+                        </div>
+
+                        <AnimatePresence>
+                          {lowCreditHasCIE === true && (
+                            <motion.div
+                              key="cie-count"
+                              initial={{ opacity: 0, height: 0 }}
+                              animate={{ opacity: 1, height: 'auto' }}
+                              exit={{ opacity: 0, height: 0 }}
+                              transition={{ duration: 0.2 }}
+                            >
+                              <p className="text-sm text-neutral-600 dark:text-dark-text-secondary mb-3">
+                                How many CIEs does this course have?
+                              </p>
+                              <div className="flex gap-3">
+                                {[1, 2, 3].map(n => (
+                                  <button
+                                    key={n}
+                                    onClick={() => setLowCreditCIECount(n)}
+                                    className={`w-16 py-2.5 rounded-xl font-bold text-sm border-2 transition-all duration-200
+                                      ${lowCreditCIECount === n
+                                        ? 'border-primary-500 bg-primary-500 text-white dark:border-dark-green-500 dark:bg-dark-green-500 shadow'
+                                        : 'border-neutral-300 dark:border-dark-border text-neutral-700 dark:text-neutral-300 hover:border-primary-400 dark:hover:border-dark-green-500 hover:bg-neutral-50 dark:hover:bg-dark-bg-tertiary'}`}
+                                  >
+                                    {n}
+                                  </button>
+                                ))}
+                              </div>
+                            </motion.div>
+                          )}
+                          {lowCreditHasCIE === false && (
+                            <motion.p
+                              key="no-cie-note"
+                              initial={{ opacity: 0 }}
+                              animate={{ opacity: 1 }}
+                              exit={{ opacity: 0 }}
+                              className="text-xs text-neutral-400 dark:text-neutral-500"
+                            >
+                              Final grade = uploaded SEE marks × 2 (normalised to 100)
+                            </motion.p>
+                          )}
+                        </AnimatePresence>
+                      </CardContent>
+                    </Card>
+                  </motion.div>
+                </AnimatePresence>
               )}
 
               {/* Sections */}
@@ -895,29 +957,6 @@ const UploadMarksNew = () => {
                 animate={{ opacity: 1, y: 0 }}
                 transition={{ delay: sections.length * 0.07 }}
               >
-                {/* Lab SCE — shown for IPCC and standalone/low-credit lab courses */}
-                {needsLabSCE(selectedCourseObj?.course_type, selectedCourseObj?.credits) && (
-                  <>
-                    <div className="flex items-center gap-2 mb-2 mt-6">
-                      <FlaskConical className="w-4 h-4 text-green-500 dark:text-green-400" />
-                      <h3 className="text-sm font-bold text-green-600 dark:text-green-400 uppercase tracking-wider">
-                        Lab SCE (Final Marks)
-                      </h3>
-                      <div className="flex-1 h-px bg-neutral-200 dark:bg-dark-border" />
-                    </div>
-                    <p className="text-xs text-neutral-500 dark:text-neutral-400 mb-2">
-                      {selectedCourseObj?.course_type === 'IPCC'
-                        ? 'IPCC: Lab marks (out of 50) are scaled to 20 and added to theory CIE (30) = 50 total CIE.'
-                        : 'Standalone lab: Upload final lab marks (out of 50) scaled to 20.'}
-                    </p>
-                    <LabSCEUploadSlot
-                      courseId={selectedCourse}
-                      hasLabUploaded={hasLabUploaded}
-                      onUploaded={() => setLabUploaded(true)}
-                    />
-                  </>
-                )}
-
                 <div className="flex items-center gap-2 mb-2 mt-6">
                   <FileText className="w-4 h-4 text-neutral-500 dark:text-dark-text-muted" />
                   <h3 className="text-sm font-bold text-neutral-500 dark:text-dark-text-muted uppercase tracking-wider">

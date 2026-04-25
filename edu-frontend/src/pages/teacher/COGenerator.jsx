@@ -775,7 +775,7 @@ const COGenerator = () => {
         </div>
 
         {/* Pipeline Metrics */}
-        <div>
+        {/* <div>
           {pipelineMetrics && (
             <Card className="sticky top-20">
               <CardContent className="p-6">
@@ -856,7 +856,7 @@ const COGenerator = () => {
               </CardContent>
             </Card>
           )}
-        </div>
+        </div> */}
       </div>
     </motion.div>
   );

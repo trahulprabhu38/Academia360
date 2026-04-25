@@ -13,40 +13,38 @@ class CGPACalculationService {
    * @param {Number} academicYear - Academic year (e.g., 2024)
    * @returns {Object} SGPA data
    */
-  async calculateSGPA(studentId, semester, academicYear) {
+  async calculateSGPA(studentId, semester, academicYear = null) {
     const client = await pool.connect();
 
     try {
       console.log(`\n=== CALCULATING SGPA ===`);
-      console.log(`Student: ${studentId}, Semester: ${semester}, Year: ${academicYear}`);
+      console.log(`Student: ${studentId}, Semester: ${semester}, Year: ${academicYear ?? 'any'}`);
 
-      // Get all courses for this student in this semester
+      // Do NOT filter by year — courses in the same semester can have different year values
+      // (e.g. created across two calendar years), and filtering would silently drop them.
       const coursesQuery = `
         SELECT
-          c.id AS course_id,
-          c.code,
-          c.name,
-          c.credits,
-          sfg.final_total,
-          sfg.final_percentage,
-          sfg.letter_grade,
-          sfg.grade_points,
-          sfg.is_passed
+          c.id AS course_id, c.code, c.name, c.credits, c.year,
+          sfg.final_total, sfg.final_percentage, sfg.letter_grade,
+          sfg.grade_points, sfg.is_passed
         FROM courses c
         JOIN students_courses sc ON c.id = sc.course_id
-        LEFT JOIN student_final_grades sfg ON c.id = sfg.course_id AND sc.student_id = sfg.student_id
-        WHERE sc.student_id = $1
-          AND c.semester = $2
-          AND c.year = $3
+        LEFT JOIN student_final_grades sfg
+               ON c.id = sfg.course_id AND sc.student_id = sfg.student_id
+        WHERE sc.student_id = $1 AND c.semester = $2
         ORDER BY c.code
       `;
 
-      const coursesResult = await client.query(coursesQuery, [studentId, semester, academicYear]);
+      const coursesResult = await client.query(coursesQuery, [studentId, semester]);
       const courses = coursesResult.rows;
 
       if (courses.length === 0) {
-        throw new Error(`No courses found for student in semester ${semester}, year ${academicYear}`);
+        throw new Error(`No courses found for student in semester ${semester}`);
       }
+
+      // Resolve academic year from the courses themselves (max year present)
+      const maxCourseYear = Math.max(...courses.map(c => parseInt(c.year) || 0)) || new Date().getFullYear();
+      const resolvedYear = academicYear != null ? academicYear : maxCourseYear;
 
       console.log(`Found ${courses.length} courses for this semester`);
 
@@ -132,7 +130,7 @@ class CGPACalculationService {
       const result = await client.query(upsertQuery, [
         studentId,
         semester,
-        academicYear,
+        resolvedYear,
         totalCreditsRegistered,
         totalCreditsEarned,
         totalGradePoints,

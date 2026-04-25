@@ -20,73 +20,80 @@ class GradeCalculationService {
       console.log(`\n=== CALCULATING FINAL GRADE ===`);
       console.log(`Student ID: ${studentId}, Course ID: ${courseId}`);
 
-      // 1. Get CIE total from final_cie_composition table (max 50)
-      const cieQuery = await client.query(
-        'SELECT final_cie_total, final_cie_max FROM final_cie_composition WHERE student_id = $1 AND course_id = $2',
-        [studentId, courseId]
+      // 1. Get course credits and type — both drive which calculation path to use
+      const courseQuery = await client.query(
+        'SELECT credits, course_type FROM courses WHERE id = $1',
+        [courseId]
       );
+      if (courseQuery.rows.length === 0) throw new Error('Course not found');
+      const credits    = parseInt(courseQuery.rows[0].credits) || 3;
+      const courseType = courseQuery.rows[0].course_type || 'STANDALONE_THEORY';
+      console.log(`Course Credits: ${credits}, Type: ${courseType}`);
 
-      if (cieQuery.rows.length === 0) {
-        const error = new Error('CIE marks not found for this student. Please ensure CIE calculations are complete before uploading SEE marks.');
-        error.code = 'CIE_NOT_FOUND';
-        throw error;
-      }
-
-      const cieTotal = parseFloat(cieQuery.rows[0].final_cie_total);
-      const cieMax = parseFloat(cieQuery.rows[0].final_cie_max);
-
-      // Validate CIE data
-      if (isNaN(cieTotal) || isNaN(cieMax)) {
-        throw new Error('Invalid CIE data found. Please recalculate CIE marks.');
-      }
-
-      console.log(`CIE Total: ${cieTotal}/${cieMax}`);
-
-      // 2. Get SEE marks (out of 100, will be scaled to 50)
+      // 2. Get uploaded final marks (stored in see_marks table for all course types)
       const seeQuery = await client.query(
         'SELECT see_marks_obtained, see_max_marks FROM see_marks WHERE student_id = $1 AND course_id = $2',
         [studentId, courseId]
       );
-
       if (seeQuery.rows.length === 0) {
-        throw new Error('SEE marks not found. Please upload SEE marks first.');
+        throw new Error('Final marks not found. Please upload marks first.');
       }
-
       const seeMarksObtained = parseFloat(seeQuery.rows[0].see_marks_obtained) || 0;
       const seeMaxMarks = parseFloat(seeQuery.rows[0].see_max_marks) || 100;
+      console.log(`Uploaded marks: ${seeMarksObtained}/${seeMaxMarks}`);
 
-      console.log(`SEE Marks: ${seeMarksObtained}/${seeMaxMarks}`);
+      // 3. Check CIE composition for ALL courses before deciding the formula path.
+      //    A 2-credit course that has CIE data (e.g. Research Methodology 21RM56)
+      //    must use CIE+SEE, not the ×2 shortcut.
+      const cieQuery = await client.query(
+        'SELECT final_cie_total, final_cie_max FROM final_cie_composition WHERE student_id = $1 AND course_id = $2',
+        [studentId, courseId]
+      );
+      const hasCIE = cieQuery.rows.length > 0 && parseFloat(cieQuery.rows[0].final_cie_total) > 0;
 
-      // 3. Calculate final marks
-      // Formula: Final = CIE (out of 50) + SEE (scaled to 50) = 100
+      // ×2 path applies only when the course has ≤2 credits AND no CIE composition data.
+      const useLowCreditFormula = credits <= 2 && !hasCIE;
+      console.log(`Path: ${useLowCreditFormula ? 'low-credit ×2' : hasCIE ? 'CIE+SEE' : 'SEE-only'}`);
+
+      // 4. Calculate final marks
       //
-      // Handle CIE scaling based on max marks:
-      // - If CIE is out of 100, divide by 2 to get out of 50
-      // - If CIE is out of 50, use as-is
-      // SEE is always out of 100, so scale to 50
+      //   Low-credit (≤2cr, no CIE): Final = uploaded × 2 (teacher enters on ~50-pt scale)
+      //   Any course WITH CIE: CIE/50 + SEE scaled to 50 = 100
+      //   Standard (≥3cr) WITHOUT CIE: SEE/seeMax × 100
+      let finalTotal, finalMax, finalPercentage;
+      let cieTotalOutOf50 = 0;
+      let seeTotalForStore = 0;
 
-      let cieTotalOutOf50;
-      if (cieMax === 100) {
-        // CIE is out of 100, so divide by 2 to get out of 50
-        cieTotalOutOf50 = cieTotal / 2;
-        console.log(`CIE scaling: ${cieTotal}/100 → ${cieTotalOutOf50}/50 (divided by 2)`);
+      if (useLowCreditFormula) {
+        // Low-credit lab/activity with no CIE: marks entered on ~50-pt scale; ×2 → 100
+        finalMax = 100.00;
+        finalTotal = Math.min(seeMarksObtained * 2, 100);
+        finalPercentage = finalTotal;
+        seeTotalForStore = seeMarksObtained;
+        console.log(`Low-credit ×2 path: ${seeMarksObtained} × 2 = ${finalTotal.toFixed(2)}/100`);
+      } else if (!hasCIE) {
+        // No CIE data yet — SEE-only fallback
+        finalMax = 100.00;
+        finalTotal = (seeMarksObtained / seeMaxMarks) * 100;
+        finalPercentage = finalTotal;
+        seeTotalForStore = (seeMarksObtained / seeMaxMarks) * 50;
+        console.log(`SEE-only path: ${seeMarksObtained}/${seeMaxMarks} → ${finalTotal.toFixed(2)}/100`);
       } else {
-        // CIE is already out of 50
-        cieTotalOutOf50 = cieTotal;
-        console.log(`CIE: ${cieTotalOutOf50}/50 (no scaling needed)`);
+        // CIE+SEE path (all courses with CIE data, including 2-credit courses like RM56)
+        const cieTotal = parseFloat(cieQuery.rows[0].final_cie_total);
+        const cieMax   = parseFloat(cieQuery.rows[0].final_cie_max);
+        if (isNaN(cieTotal) || isNaN(cieMax)) throw new Error('Invalid CIE data. Please recalculate CIE marks.');
+        console.log(`CIE Total: ${cieTotal}/${cieMax}`);
+
+        cieTotalOutOf50 = cieMax === 100 ? cieTotal / 2 : cieTotal;
+        seeTotalForStore = (seeMarksObtained / seeMaxMarks) * 50;
+        finalTotal = cieTotalOutOf50 + seeTotalForStore;
+        finalMax = 100.00;
+        finalPercentage = (finalTotal / finalMax) * 100;
+        console.log(`CIE+SEE path: CIE ${cieTotalOutOf50.toFixed(2)}/50 + SEE ${seeTotalForStore.toFixed(2)}/50 = ${finalTotal.toFixed(2)}/100`);
       }
 
-      // Scale SEE from 100 to 50
-      const seeTotalScaledTo50 = (seeMarksObtained / seeMaxMarks) * 50;
-      console.log(`SEE scaling: ${seeMarksObtained}/100 → ${seeTotalScaledTo50.toFixed(2)}/50`);
-
-      // Calculate final total (max 100)
-      const finalTotal = cieTotalOutOf50 + seeTotalScaledTo50;
-      const finalMax = 100.00;
-      const finalPercentage = (finalTotal / finalMax) * 100;
-
-      console.log(`Final Total: ${finalTotal.toFixed(2)}/${finalMax}`);
-      console.log(`Final Percentage: ${finalPercentage.toFixed(2)}%`);
+      console.log(`Final: ${finalTotal.toFixed(2)}/${finalMax} (${finalPercentage.toFixed(2)}%)`);
 
       // 4. Assign letter grade based on percentage
       const letterGrade = this.assignLetterGrade(finalPercentage);
@@ -95,19 +102,6 @@ class GradeCalculationService {
       // 5. Map letter grade to grade points (10-point scale)
       const gradePoints = this.getGradePoints(letterGrade);
       console.log(`Grade Points: ${gradePoints}/10`);
-
-      // 6. Get course credits
-      const courseQuery = await client.query(
-        'SELECT credits FROM courses WHERE id = $1',
-        [courseId]
-      );
-
-      if (courseQuery.rows.length === 0) {
-        throw new Error('Course not found');
-      }
-
-      const credits = parseInt(courseQuery.rows[0].credits) || 3;
-      console.log(`Course Credits: ${credits}`);
 
       // 7. Determine pass/fail status
       const isPassed = ['A+', 'A', 'B+', 'B', 'C+', 'C', 'D'].includes(letterGrade);
@@ -144,10 +138,10 @@ class GradeCalculationService {
       const result = await client.query(upsertQuery, [
         studentId,
         courseId,
-        cieTotalOutOf50,
-        50.00,
-        seeTotalScaledTo50,
-        50.00,
+        useLowCreditFormula ? null : cieTotalOutOf50,   // null = dash in UI for ×2 courses
+        useLowCreditFormula ? null : 50.00,
+        useLowCreditFormula ? seeMarksObtained : seeTotalForStore,
+        useLowCreditFormula ? seeMaxMarks : 50.00,
         finalTotal,
         finalMax,
         finalPercentage,
@@ -217,7 +211,8 @@ class GradeCalculationService {
     try {
       console.log(`\n=== RECALCULATING ALL GRADES FOR COURSE ${courseId} ===`);
 
-      // Get all students enrolled in the course who have both CIE and SEE marks
+      // Get all students enrolled in the course who have SEE marks uploaded
+      // (low-credit courses have no CIE records, so we must not require fcc join)
       const query = `
         SELECT DISTINCT
           sc.student_id,
@@ -225,7 +220,6 @@ class GradeCalculationService {
           u.name
         FROM students_courses sc
         JOIN users u ON sc.student_id = u.id
-        JOIN final_cie_composition fcc ON sc.student_id = fcc.student_id AND sc.course_id = fcc.course_id
         JOIN see_marks sm ON sc.student_id = sm.student_id AND sc.course_id = sm.course_id
         WHERE sc.course_id = $1
         ORDER BY u.usn
@@ -234,7 +228,7 @@ class GradeCalculationService {
       const studentsResult = await pool.query(query, [courseId]);
       const students = studentsResult.rows;
 
-      console.log(`Found ${students.length} students with both CIE and SEE marks`);
+      console.log(`Found ${students.length} students with SEE marks`);
 
       const results = {
         total: students.length,
@@ -271,8 +265,7 @@ class GradeCalculationService {
 
         throw new Error(
           `Failed to calculate grades for all ${results.failed} students. ` +
-          `Common errors: ${errorSummary}. ` +
-          `Please ensure CIE marks are calculated for all students before uploading SEE marks.`
+          `Common errors: ${errorSummary}.`
         );
       }
 

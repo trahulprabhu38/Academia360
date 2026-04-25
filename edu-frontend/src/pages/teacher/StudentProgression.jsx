@@ -143,12 +143,20 @@ const StudentProgression = () => {
       if (d.success) {
         setProgression(d.data);
 
-        // Auto-recalc once if any semester has a stale SGPA in semester_results
-        // (detected when the loaded course count > coursesRegistered from DB cache)
+        // Auto-recalc when:
+        //   (a) stale course count (semester_results computed before new courses were enrolled), OR
+        //   (b) courses exist with grades but SGPA is still null (pipeline not yet run), OR
+        //   (c) courses exist but NO grades at all — marks may be uploaded but pipeline never ran
         if (autoRecalc) {
-          const needsRecalc = d.data?.semesters?.some(
-            s => s.courses?.length > 0 && s.coursesRegistered > 0 && s.courses.length !== s.coursesRegistered
-          );
+          const needsRecalc = d.data?.semesters?.some(s => {
+            if (!s.courses?.length) return false;
+            if (s.coursesRegistered > 0 && s.courses.length !== s.coursesRegistered) return true;
+            const hasGrades = s.courses.some(c => c.gradePoints !== null);
+            if (hasGrades && s.sgpa === null) return true;
+            // Courses exist but zero are graded — marks may be uploaded, pipeline not run
+            if (s.coursesRegistered > 0 && !hasGrades && s.status !== 'not_started') return true;
+            return false;
+          });
           if (needsRecalc) {
             await fetch(`${API}/progression/students/${studentId}/recalculate`, {
               method: 'POST', headers: headers()
@@ -178,13 +186,16 @@ const StudentProgression = () => {
   const handleRecalculate = async () => {
     if (!selectedStudent) return;
     setRecalc(true);
+    setError(null);
     try {
-      await fetch(`${API}/progression/students/${selectedStudent.id}/recalculate`, {
+      const r = await fetch(`${API}/progression/students/${selectedStudent.id}/recalculate`, {
         method: 'POST', headers: headers()
       });
-      await loadProgression(selectedStudent.id);
+      const d = await r.json();
+      if (!d.success) setError('Recalculate failed: ' + (d.message || 'unknown error'));
+      await loadProgression(selectedStudent.id, { autoRecalc: false });
     } catch (e) {
-      console.error('Recalculate failed:', e);
+      setError('Recalculate failed: ' + e.message);
     } finally {
       setRecalc(false);
     }
@@ -315,17 +326,27 @@ const StudentProgression = () => {
                   </div>
                 </div>
 
-                <div className="flex flex-wrap gap-8">
-                  <StatChip label="Current Sem" value={`Sem ${progressionData.currentSemester}`}
-                    color="text-primary-600 dark:text-dark-green-500" />
-                  <StatChip label="Total Credits" value={progressionData.totalCredits}
-                    color="text-green-600 dark:text-green-400" />
-                  <StatChip label="Courses Passed" value={progressionData.totalCoursesCompleted}
-                    color="text-blue-600 dark:text-blue-400" />
-                  <StatChip label="Pass Rate" value={`${passRate}%`}
-                    color={passRate >= 80 ? 'text-green-600' : passRate >= 60 ? 'text-yellow-600' : 'text-red-600'} />
-                  <StatChip label="Best SGPA" value={bestSGPA}
-                    color="text-purple-600 dark:text-purple-400" />
+                <div className="flex flex-wrap items-center gap-6">
+                  <div className="flex flex-wrap gap-8">
+                    <StatChip label="Current Sem" value={`Sem ${progressionData.currentSemester}`}
+                      color="text-primary-600 dark:text-dark-green-500" />
+                    <StatChip label="Total Credits" value={progressionData.totalCredits}
+                      color="text-green-600 dark:text-green-400" />
+                    <StatChip label="Courses Passed" value={progressionData.totalCoursesCompleted}
+                      color="text-blue-600 dark:text-blue-400" />
+                    <StatChip label="Pass Rate" value={`${passRate}%`}
+                      color={passRate >= 80 ? 'text-green-600' : passRate >= 60 ? 'text-yellow-600' : 'text-red-600'} />
+                    <StatChip label="Best SGPA" value={bestSGPA}
+                      color="text-purple-600 dark:text-purple-400" />
+                  </div>
+                  <button
+                    onClick={handleRecalculate}
+                    disabled={recalculating}
+                    className="flex items-center gap-2 px-4 py-2 rounded-xl bg-primary-600 hover:bg-primary-700 disabled:opacity-60 text-white text-sm font-semibold transition-colors shadow-sm"
+                  >
+                    <RefreshCw className={`w-4 h-4 ${recalculating ? 'animate-spin' : ''}`} />
+                    {recalculating ? 'Recalculating…' : 'Recalculate'}
+                  </button>
                 </div>
               </div>
             </CardContent>

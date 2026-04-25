@@ -339,13 +339,29 @@ router.get('/department/:department/overview', authenticateToken, async (req, re
   }
 });
 
+// Grade/letter helpers used by the direct low-credit fix path
+function _assignGrade(pct) {
+  if (pct >= 91) return 'A+';
+  if (pct >= 81) return 'A';
+  if (pct >= 71) return 'B+';
+  if (pct >= 61) return 'B';
+  if (pct >= 51) return 'C+';
+  if (pct >= 41) return 'C';
+  if (pct >= 40) return 'D';
+  if (pct >= 35) return 'E';
+  return 'F';
+}
+const _GP_MAP = { 'A+': 10, 'A': 9, 'B+': 8, 'B': 7, 'C+': 6, 'C': 5, 'D': 4, 'E': 0, 'F': 0 };
+
 /**
  * POST /api/progression/students/:studentId/recalculate
- * Run the FULL pipeline for a student:
- *   1. CIE composition → final_cie_composition (per course)
- *   2. Final grades    → student_final_grades  (per course)
- *   3. SGPA            → semester_results       (per semester)
- *   4. CGPA            → student_cgpa
+ * Recalculates grades → SGPA → CGPA for a student.
+ *
+ * For low-credit courses (≤2 cr) the ×2 formula is applied directly from
+ * see_marks so the result is correct regardless of what CIE composition data
+ * exists.  The slow calculateFinalCIEComposition step is skipped here — it
+ * only needs to run when CIE attainment reports are regenerated.
+ *
  * Access: Teacher
  */
 router.post('/students/:studentId/recalculate', authenticateToken, async (req, res) => {
@@ -353,9 +369,10 @@ router.post('/students/:studentId/recalculate', authenticateToken, async (req, r
     const { studentId } = req.params;
     const pool = (await import('../config/db.js')).default;
 
-    // Get all courses the student is enrolled in
+    // Fetch all enrolled courses with their credits
     const enrolledCoursesQuery = await pool.query(`
-      SELECT DISTINCT sc.course_id, c.semester, c.year
+      SELECT DISTINCT sc.course_id, c.semester, c.year,
+                      COALESCE(c.credits, 3) AS credits
       FROM students_courses sc
       JOIN courses c ON sc.course_id = c.id
       WHERE sc.student_id = $1
@@ -364,66 +381,102 @@ router.post('/students/:studentId/recalculate', authenticateToken, async (req, r
 
     const enrolledCourses = enrolledCoursesQuery.rows;
     const results = {
-      cieComposition: { done: [], failed: [] },
-      grades: { done: [], failed: [] },
-      sgpa: { done: [], failed: [] },
+      grades:    { done: [], failed: [] },
+      directFix: { done: [], failed: [] },
+      sgpa:      { done: [], failed: [] },
     };
 
-    // Step 1 & 2: per course — CIE composition then final grade
     for (const row of enrolledCourses) {
-      const { course_id: courseId, semester, year } = row;
+      const { course_id: courseId, semester } = row;
+      const credits = parseInt(row.credits) || 3;
 
-      // 1. Recalculate CIE composition for this course (all students)
-      try {
-        await detailedCalculationsService.calculateFinalCIEComposition(courseId);
-        results.cieComposition.done.push(`Course ${courseId} Sem ${semester}`);
-      } catch (err) {
-        results.cieComposition.failed.push(`Sem ${semester}: ${err.message}`);
+      // Determine formula path: ×2 only for ≤2-credit courses with NO CIE data.
+      // Courses like RM56 (2cr WITH CIE) must use the CIE+SEE path.
+      let useLowCreditX2 = false;
+      if (credits <= 2) {
+        const cieCheck = await pool.query(
+          'SELECT 1 FROM final_cie_composition WHERE student_id=$1 AND course_id=$2 AND final_cie_total > 0 LIMIT 1',
+          [studentId, courseId]
+        );
+        useLowCreditX2 = cieCheck.rows.length === 0;
       }
 
-      // 2. Calculate this student's final grade for this course
-      try {
-        await gradeCalculationService.calculateFinalGrade(studentId, courseId);
-        results.grades.done.push(`Sem ${semester}`);
-      } catch (err) {
-        // Grade calc fails silently when SEE marks aren't uploaded yet — that's fine
-        results.grades.failed.push(`Sem ${semester}: ${err.message}`);
+      if (useLowCreditX2) {
+        // ── Low-credit lab/activity (≤2 cr, no CIE): apply ×2 from see_marks ──
+        try {
+          const seeRes = await pool.query(
+            'SELECT see_marks_obtained FROM see_marks WHERE student_id = $1 AND course_id = $2',
+            [studentId, courseId]
+          );
+          if (seeRes.rows.length === 0) {
+            results.grades.failed.push(`Sem ${semester} (${credits}cr): no SEE marks uploaded yet`);
+            continue;
+          }
+          const raw      = parseFloat(seeRes.rows[0].see_marks_obtained);
+          const finalPct = Math.min(raw * 2, 100);
+          const grade    = _assignGrade(finalPct);
+          const gp       = _GP_MAP[grade] ?? 0;
+          const passed   = !['E', 'F'].includes(grade);
+
+          await pool.query(`
+            INSERT INTO student_final_grades
+              (student_id, course_id,
+               cie_total, cie_max, see_total, see_max,
+               final_total, final_max, final_percentage,
+               letter_grade, grade_points, credits, is_passed, calculated_at)
+            VALUES ($1,$2, NULL,NULL, $3,100, $4,100,$5, $6,$7,$8,$9, CURRENT_TIMESTAMP)
+            ON CONFLICT (student_id, course_id) DO UPDATE SET
+              cie_total=NULL, cie_max=NULL,
+              see_total=EXCLUDED.see_total, see_max=EXCLUDED.see_max,
+              final_total=EXCLUDED.final_total, final_max=EXCLUDED.final_max,
+              final_percentage=EXCLUDED.final_percentage,
+              letter_grade=EXCLUDED.letter_grade, grade_points=EXCLUDED.grade_points,
+              credits=EXCLUDED.credits, is_passed=EXCLUDED.is_passed,
+              calculated_at=CURRENT_TIMESTAMP, updated_at=CURRENT_TIMESTAMP
+          `, [studentId, courseId, raw, finalPct, finalPct, grade, gp, credits, passed]);
+
+          results.grades.done.push(`Sem ${semester} (${credits}cr): ${raw}×2=${finalPct}% → ${grade}`);
+        } catch (err) {
+          results.grades.failed.push(`Sem ${semester} (${credits}cr): ${err.message}`);
+        }
+      } else {
+        // ── Standard course or low-credit WITH CIE: use grade calculation service ──
+        try {
+          await gradeCalculationService.calculateFinalGrade(studentId, courseId);
+          results.grades.done.push(`Sem ${semester} (${credits}cr)`);
+        } catch (err) {
+          results.grades.failed.push(`Sem ${semester} (${credits}cr): ${err.message}`);
+        }
       }
     }
 
-    // Step 3a: SGPA from students_courses (enrolled courses with final grades)
-    const semesterGroups = {};
-    for (const row of enrolledCourses) {
-      const key = `${row.semester}_${row.year}`;
-      semesterGroups[key] = { semester: row.semester, year: row.year };
-    }
-    for (const { semester, year } of Object.values(semesterGroups)) {
+    // ── Step 3a: SGPA from enrolled courses (no year split) ─────────────────
+    const semesterSet = new Set(enrolledCourses.map(r => parseInt(r.semester)));
+    for (const semester of semesterSet) {
       try {
-        await cgpaCalculationService.calculateSGPA(studentId, semester, year);
-        results.sgpa.done.push(`Semester ${semester} (${year}) [courses]`);
+        await cgpaCalculationService.calculateSGPA(studentId, semester, null);
+        results.sgpa.done.push(`Semester ${semester} [courses]`);
       } catch (err) {
         results.sgpa.failed.push(`Semester ${semester} [courses]: ${err.message}`);
       }
     }
 
-    // Step 3b: SGPA from semester_subjects (manually entered grades)
-    const subjectSemQuery = await pool.query(`
-      SELECT DISTINCT semester FROM semester_subjects WHERE student_id = $1
-    `, [studentId]);
+    // ── Step 3b: SGPA from manually-entered semester_subjects ───────────────
+    const subjectSemQuery = await pool.query(
+      'SELECT DISTINCT semester FROM semester_subjects WHERE student_id = $1',
+      [studentId]
+    );
     for (const { semester } of subjectSemQuery.rows) {
-      // Only calculate if not already calculated from courses
-      const alreadyDone = results.sgpa.done.some(d => d.startsWith(`Semester ${semester} `));
-      if (!alreadyDone) {
-        try {
-          await cgpaCalculationService.calculateSGPAFromSubjects(studentId, semester);
-          results.sgpa.done.push(`Semester ${semester} [subjects]`);
-        } catch (err) {
-          results.sgpa.failed.push(`Semester ${semester} [subjects]: ${err.message}`);
-        }
+      if (results.sgpa.done.some(d => d.startsWith(`Semester ${semester} `))) continue;
+      try {
+        await cgpaCalculationService.calculateSGPAFromSubjects(studentId, semester);
+        results.sgpa.done.push(`Semester ${semester} [subjects]`);
+      } catch (err) {
+        results.sgpa.failed.push(`Semester ${semester} [subjects]: ${err.message}`);
       }
     }
 
-    // Step 4: CGPA
+    // ── Step 4: CGPA ────────────────────────────────────────────────────────
     try {
       await cgpaCalculationService.calculateCGPA(studentId);
     } catch (err) {
@@ -432,7 +485,7 @@ router.post('/students/:studentId/recalculate', authenticateToken, async (req, r
 
     return res.status(200).json({
       success: true,
-      message: 'Full pipeline recalculated',
+      message: 'Recalculation complete',
       data: results
     });
 

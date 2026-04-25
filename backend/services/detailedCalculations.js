@@ -1123,6 +1123,46 @@ class DetailedCalculationsService {
   }
 
   /**
+   * Read a student's score from a raw marksheet table.
+   * preferredCol: the column to use first (e.g. 'aat', 'quiz') — matched case-insensitively.
+   * If not found, sums all numeric non-identifier columns.
+   * Uses SELECT * to avoid PostgreSQL quoted-identifier case-sensitivity issues.
+   */
+  async _scoreFromMarksheet(marksheet, usn, preferredCol) {
+    const { table_name } = marksheet;
+    if (!table_name) return 0;
+
+    // Fetch the student's full row via SELECT * — avoids column-name case issues
+    let row = null;
+    // Try common USN column name variants
+    for (const usnCol of ['USN', 'usn', 'Usn']) {
+      try {
+        const res = await pool.query(
+          `SELECT * FROM "${table_name}" WHERE UPPER("${usnCol}") = UPPER($1) LIMIT 1`,
+          [usn]
+        );
+        if (res.rows.length > 0) { row = res.rows[0]; break; }
+      } catch (_) { /* try next variant */ }
+    }
+    if (!row) return 0;
+
+    const SKIP = new Set(['usn', 'name', 'student_name', 'sl_no', 'sl.no', 'sno', 'serial', '#', 'sl']);
+
+    // Prefer the named column (case-insensitive key lookup in the actual row)
+    const preferredKey = Object.keys(row).find(k => k.toLowerCase() === preferredCol.toLowerCase());
+    const targetKeys = preferredKey
+      ? [preferredKey]
+      : Object.keys(row).filter(k => !SKIP.has(k.toLowerCase()));
+
+    let total = 0;
+    for (const k of targetKeys) {
+      const n = parseFloat(row[k]);
+      if (!isNaN(n) && n >= 0) total += n;
+    }
+    return total;
+  }
+
+  /**
    * Calculate final CIE composition (CIE1 + CIE2 + CIE3 + AAT + QUIZ)
    * Formula: Final = ((CIE1 + CIE2 + CIE3)/3) scaled to 30 + AAT(10) + QUIZ(10) = 50 max
    */
@@ -1146,24 +1186,38 @@ class DetailedCalculationsService {
 
     console.log(`Found ${studentsQuery.rows.length} students enrolled in course`);
 
-    // For non-IPCC: get AAT/QUIZ marksheet
-    let aatTableName = null, aatColName = null, quizColName = null;
+    // Pre-load AAT and QUIZ marksheet metadata (done once, outside student loop).
+    // Two-pass detection: first by column name ('AAT'/'QUIZ' columns), then by assessment_name.
+    // This handles any column naming convention the teacher uses.
+    let aatMarksheet = null, quizMarksheet = null;
     if (!isIPCC) {
-      const aatMarksheetQuery = await pool.query(`
-        SELECT id, table_name, columns
-        FROM marksheets
-        WHERE course_id = $1 AND (
-          assessment_name ILIKE '%AAT%' OR
-          assessment_name ILIKE '%QUIZ%'
-        )
-        LIMIT 1
-      `, [courseId]);
-      const aatMarksheetRow = aatMarksheetQuery.rows[0];
-      aatTableName  = aatMarksheetRow?.table_name;
-      const aatTableColumns = aatMarksheetRow?.columns || [];
-      aatColName  = aatTableColumns.find(c => c.toLowerCase() === 'aat');
-      quizColName = aatTableColumns.find(c => c.toLowerCase() === 'quiz');
-      console.log(`AAT table: ${aatTableName || 'NOT FOUND'}, AAT col: ${aatColName}, QUIZ col: ${quizColName}`);
+      const CIE_PAT = /CIA[\s._-]*\d|CIE[\s._-]*\d|CIE\d/i;
+      const allMs = await pool.query(
+        'SELECT table_name, columns, assessment_name FROM marksheets WHERE course_id = $1 ORDER BY created_at',
+        [courseId]
+      );
+      // Pass 1: find by exact column name 'AAT'/'QUIZ'
+      for (const ms of allMs.rows) {
+        if (!ms.table_name || CIE_PAT.test(ms.assessment_name)) continue;
+        const cols = ms.columns || [];
+        if (!aatMarksheet  && cols.some(c => /^aat$/i.test(c)))  { aatMarksheet  = ms; }
+        if (!quizMarksheet && cols.some(c => /^quiz$/i.test(c))) { quizMarksheet = ms; }
+        if (aatMarksheet && quizMarksheet) break;
+      }
+      // Pass 2: fallback by assessment_name for any still-missing ones
+      for (const ms of allMs.rows) {
+        if (!ms.table_name || CIE_PAT.test(ms.assessment_name)) continue;
+        if (!aatMarksheet  && /aat/i.test(ms.assessment_name))          { aatMarksheet  = ms; }
+        if (!quizMarksheet && /quiz|qz\b/i.test(ms.assessment_name))    { quizMarksheet = ms; }
+        if (aatMarksheet && quizMarksheet) break;
+      }
+      // If QUIZ still not found separately, check if AAT marksheet also has QUIZ column
+      if (!quizMarksheet && aatMarksheet) {
+        const cols = aatMarksheet.columns || [];
+        if (cols.some(c => /^quiz$/i.test(c))) quizMarksheet = aatMarksheet;
+      }
+      console.log(`AAT marksheet: ${aatMarksheet ? `"${aatMarksheet.assessment_name}" (${aatMarksheet.table_name})` : 'NOT FOUND'}`);
+      console.log(`QUIZ marksheet: ${quizMarksheet ? `"${quizMarksheet.assessment_name}" (${quizMarksheet.table_name})` : 'NOT FOUND'}`);
     }
 
     // For IPCC: pre-load lab marks keyed by USN
@@ -1234,22 +1288,18 @@ class DetailedCalculationsService {
         labScaledMarks = Math.min(labMarksByUSN[usn.toUpperCase()] || 0, 20);
       } else {
         // Theory-only: Final CIE = avg CIE (30) + AAT (10) + QUIZ (10) = 50
-        if (aatTableName && (aatColName || quizColName)) {
+        if (aatMarksheet) {
           try {
-            const selectCols = [aatColName, quizColName].filter(Boolean).map(c => `"${c}"`).join(', ');
-            const aatQuizQuery = await pool.query(
-              `SELECT ${selectCols} FROM "${aatTableName}" WHERE UPPER("USN") = UPPER($1) LIMIT 1`,
-              [usn]
-            );
-            if (aatQuizQuery.rows.length > 0) {
-              const row = aatQuizQuery.rows[0];
-              const aatVal  = aatColName  ? row[aatColName]  : null;
-              const quizVal = quizColName ? row[quizColName] : null;
-              if (aatVal  && aatVal  !== 'NaN' && aatVal  !== 'nan') aatMarks  = Math.min(parseFloat(aatVal)  || 0, 10);
-              if (quizVal && quizVal !== 'NaN' && quizVal !== 'nan') quizMarks = Math.min(parseFloat(quizVal) || 0, 10);
-            }
-          } catch (aatErr) {
-            console.warn(`  ⚠️ Could not fetch AAT/QUIZ for ${usn}: ${aatErr.message} — using 0`);
+            aatMarks = Math.min(await this._scoreFromMarksheet(aatMarksheet, usn, 'aat'), 10);
+          } catch (e) {
+            console.warn(`  ⚠️ AAT fetch failed for ${usn}: ${e.message}`);
+          }
+        }
+        if (quizMarksheet) {
+          try {
+            quizMarks = Math.min(await this._scoreFromMarksheet(quizMarksheet, usn, 'quiz'), 10);
+          } catch (e) {
+            console.warn(`  ⚠️ QUIZ fetch failed for ${usn}: ${e.message}`);
           }
         }
       }

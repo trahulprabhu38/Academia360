@@ -87,6 +87,7 @@ class SemesterProgressionService {
       const inlineCGPAHistory = [];
 
       for (let semNum = 1; semNum <= 8; semNum++) {
+        try {
         const semesterResult = semesterResults.find(s => parseInt(s.semester) === semNum);
         const enrolledYear = enrolledMap.get(semNum);
 
@@ -95,6 +96,17 @@ class SemesterProgressionService {
           // been computed when fewer courses were enrolled, so year-scoped query drops new ones
           let courses = await this.getSemesterCourses(studentId, semNum, null);
           if (courses.length === 0) courses = await this.getSemesterSubjectData(studentId, semNum);
+
+          // Stale semester_results row with no actual courses → treat as not started
+          if (courses.length === 0) {
+            semesters.push({
+              semester: semNum, year: null, sgpa: null,
+              credits: 0, creditsEarned: 0, status: 'not_started',
+              coursesRegistered: 0, coursesPassed: 0, coursesFailed: 0,
+              resultDate: null, courses: []
+            });
+            continue;
+          }
 
           // Recompute counts from the actual loaded courses (not stale semester_results counts)
           const gradedCourses = courses.filter(c => c.gradePoints !== null);
@@ -218,6 +230,22 @@ class SemesterProgressionService {
             courses: []
           });
         }
+        } catch (semErr) {
+          console.error(`Error building semester ${semNum} for student ${studentId}:`, semErr.message);
+          semesters.push({
+            semester: semNum,
+            year: null,
+            sgpa: null,
+            credits: 0,
+            creditsEarned: 0,
+            status: 'not_started',
+            coursesRegistered: 0,
+            coursesPassed: 0,
+            coursesFailed: 0,
+            resultDate: null,
+            courses: []
+          });
+        }
       }
 
       // Compute final inline CGPA and use if DB value is absent
@@ -315,7 +343,7 @@ class SemesterProgressionService {
       // this prevents year-mismatch from silently dropping enrolled courses.
       const query = academicYear
         ? `SELECT c.id AS course_id, c.code, c.name, c.credits, c.year,
-                  sfg.cie_total, sfg.see_total, sfg.final_total, sfg.final_percentage,
+                  sfg.cie_total, sfg.cie_max, sfg.see_total, sfg.final_total, sfg.final_percentage,
                   sfg.letter_grade, sfg.grade_points, sfg.is_passed
            FROM courses c
            JOIN students_courses sc ON c.id = sc.course_id
@@ -324,7 +352,7 @@ class SemesterProgressionService {
            WHERE sc.student_id = $1 AND c.semester = $2 AND c.year = $3
            ORDER BY c.code ASC`
         : `SELECT c.id AS course_id, c.code, c.name, c.credits, c.year,
-                  sfg.cie_total, sfg.see_total, sfg.final_total, sfg.final_percentage,
+                  sfg.cie_total, sfg.cie_max, sfg.see_total, sfg.final_total, sfg.final_percentage,
                   sfg.letter_grade, sfg.grade_points, sfg.is_passed
            FROM courses c
            JOIN students_courses sc ON c.id = sc.course_id
@@ -342,7 +370,8 @@ class SemesterProgressionService {
         name: row.name,
         credits: parseInt(row.credits) || 3,
         year: row.year,
-        cieMarks: row.cie_total   != null ? parseFloat(row.cie_total)   : null,
+        cieMarks: (row.cie_max != null && parseFloat(row.cie_max) > 0 && row.cie_total != null)
+                    ? parseFloat(row.cie_total) : null,
         seeMarks: row.see_total   != null ? parseFloat(row.see_total)   : null,
         finalMarks: row.final_total != null ? parseFloat(row.final_total) : null,
         percentage: row.final_percentage != null ? parseFloat(row.final_percentage) : null,
@@ -353,7 +382,7 @@ class SemesterProgressionService {
 
     } catch (error) {
       console.error('Error in getSemesterCourses:', error);
-      throw error;
+      return [];
     }
   }
 

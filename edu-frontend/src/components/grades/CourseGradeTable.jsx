@@ -90,12 +90,12 @@ const CourseGradeTable = ({ courses, showSummary = true }) => {
                   </td>
                   <td className="px-4 py-3 text-center">
                     <span className="text-sm text-neutral-700 dark:text-dark-text-secondary">
-                      {course.cieMarks !== null && course.cieMarks !== undefined ? course.cieMarks.toFixed(1) : '--'}
+                      {course.cieMarks !== null && course.cieMarks !== undefined ? course.cieMarks.toFixed(1) : '—'}
                     </span>
                   </td>
                   <td className="px-4 py-3 text-center">
                     <span className="text-sm text-neutral-700 dark:text-dark-text-secondary">
-                      {course.seeMarks !== null && course.seeMarks !== undefined ? course.seeMarks.toFixed(1) : '--'}
+                      {course.seeMarks !== null && course.seeMarks !== undefined ? course.seeMarks.toFixed(1) : '—'}
                     </span>
                   </td>
                   <td className="px-4 py-3 text-center">
