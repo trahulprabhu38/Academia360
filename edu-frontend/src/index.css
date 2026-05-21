@@ -108,3 +108,52 @@
            bg-info-100 text-info-700 dark:bg-info-700 dark:text-info-100;
   }
 }
+
+/* ── Dashboard Animations ── */
+@keyframes mesh-shift {
+  0%   { background-position: 0% 50%; }
+  50%  { background-position: 100% 50%; }
+  100% { background-position: 0% 50%; }
+}
+
+.mesh-animated {
+  background: linear-gradient(
+    -45deg,
+    #0D4715,
+    #41644A,
+    #2d4634,
+    #1a5c25,
+    #56945f,
+    #0D4715
+  );
+  background-size: 400% 400%;
+  animation: mesh-shift 12s ease infinite;
+}
+
+@keyframes float-slow {
+  0%, 100% { transform: translateY(0px)  translateX(0px)  scale(1); }
+  25%       { transform: translateY(-24px) translateX(14px)  scale(1.04); }
+  50%       { transform: translateY(-10px) translateX(-8px)  scale(0.97); }
+  75%       { transform: translateY(-34px) translateX(6px)   scale(1.02); }
+}
+
+@keyframes float-medium {
+  0%, 100% { transform: translateY(0px)  translateX(0px); }
+  33%       { transform: translateY(-18px) translateX(-12px); }
+  66%       { transform: translateY(-28px) translateX(16px); }
+}
+
+@keyframes shimmer {
+  0%   { background-position: -200% 0; }
+  100% { background-position:  200% 0; }
+}
+
+.animate-float-slow   { animation: float-slow   10s ease-in-out infinite; }
+.animate-float-medium { animation: float-medium  7s ease-in-out infinite; }
+.animate-float-fast   { animation: float-medium  4s ease-in-out infinite reverse; }
+
+.stat-shimmer {
+  background: linear-gradient(90deg, transparent 0%, rgba(255,255,255,0.08) 50%, transparent 100%);
+  background-size: 200% 100%;
+  animation: shimmer 2s infinite;
+}

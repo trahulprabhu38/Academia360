@@ -169,7 +169,8 @@ services:
       test: ["CMD-SHELL", "wget -O - http://localhost:7474 || exit 1"]
       interval: 10s
       timeout: 5s
-      retries: 5
+      retries: 10
+      start_period: 30s
     networks:
       - edu-network
     restart: unless-stopped
@@ -274,7 +275,7 @@ volumes:
   neo4j-logs:
   neo4j-import:
 
-# --- Shared Network ---
+
 networks:
   edu-network:
     driver: bridge
